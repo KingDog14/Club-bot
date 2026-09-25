@@ -87,8 +87,26 @@ CREATE TABLE IF NOT EXISTS admin_faq (
     answer   TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS admins (
+    user_id    INTEGER PRIMARY KEY,
+    role       TEXT NOT NULL DEFAULT 'admin',   -- owner | admin
+    username   TEXT,
+    name       TEXT,
+    added_by   INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS audit_log (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id    INTEGER NOT NULL,
+    action     TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_bookings_date ON bookings(date);
 CREATE INDEX IF NOT EXISTS idx_bookings_status ON bookings(status);
+CREATE INDEX IF NOT EXISTS idx_bookings_user ON bookings(user_id);
+CREATE INDEX IF NOT EXISTS idx_reviews_user ON reviews(user_id);
 """
 
 
@@ -104,6 +122,9 @@ async def init_db() -> None:
         columns = {row[1] for row in await (await db.execute("PRAGMA table_info(clients) ")).fetchall()}
         if "blocked" not in columns:
             await db.execute("ALTER TABLE clients ADD COLUMN blocked INTEGER NOT NULL DEFAULT 0")
+        review_columns = {row[1] for row in await (await db.execute("PRAGMA table_info(reviews) ")).fetchall()}
+        if "booking_id" not in review_columns:
+            await db.execute("ALTER TABLE reviews ADD COLUMN booking_id INTEGER")
         await db.commit()
     if SEED_DEMO_DATA:
         await _seed_demo_data()
@@ -299,11 +320,13 @@ async def get_future_confirmed(date_from: str) -> list[dict]:
 # Отзывы
 # ──────────────────────────────
 
-async def add_review(user_id: int, rating: int, text: str | None = None) -> None:
+async def add_review(user_id: int, rating: int, text: str | None = None,
+                     booking_id: int | None = None) -> None:
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute(
-            "INSERT INTO reviews (user_id, rating, text, created_at) VALUES (?, ?, ?, ?)",
-            (user_id, rating, text, now().isoformat()),
+            "INSERT INTO reviews (user_id, rating, text, booking_id, created_at)"
+            " VALUES (?, ?, ?, ?, ?)",
+            (user_id, rating, text, booking_id or None, now().isoformat()),
         )
         await db.commit()
 
@@ -346,3 +369,175 @@ async def get_month_stats(year: int, month: int) -> dict:
         "noshow": by_status.get(STATUS_NOSHOW, 0),
         "clients_total": clients_total,
     }
+
+
+# ──────────────────────────────
+# Занятость и проверка свободных мест
+# ──────────────────────────────
+
+async def pcs_busy(date: str, time: str, duration: int,
+                   exclude_booking_id: int | None = None) -> int:
+    """
+    Сколько ПК уже занято активными бронями, пересекающимися с интервалом
+    [time; time+duration). Часы считаем целыми — этого достаточно для клуба.
+    """
+    start = int(time[:2])
+    hours = {(start + i) % 24 for i in range(max(1, duration))}
+    placeholders = ",".join("?" for _ in STATUSES_ACTIVE)
+    sql = (f"SELECT id, time, duration, pcs FROM bookings "
+           f"WHERE date = ? AND status IN ({placeholders})")
+    args: list = [date, *STATUSES_ACTIVE]
+    if exclude_booking_id:
+        sql += " AND id != ?"
+        args.append(exclude_booking_id)
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        rows = await (await db.execute(sql, args)).fetchall()
+    busy = 0
+    for r in rows:
+        other_start = int(r["time"][:2])
+        other_hours = {(other_start + i) % 24 for i in range(max(1, r["duration"]))}
+        if hours & other_hours:
+            busy += r["pcs"]
+    return busy
+
+
+async def pcs_free(date: str, time: str, duration: int, total: int,
+                   exclude_booking_id: int | None = None) -> int:
+    """Сколько ПК свободно на интервал (никогда не меньше нуля)."""
+    return max(0, total - await pcs_busy(date, time, duration, exclude_booking_id))
+
+
+# ──────────────────────────────
+# Брони клиента (раздел «Мои брони»)
+# ──────────────────────────────
+
+async def get_client_bookings(user_id: int, only_active: bool = False) -> list[dict]:
+    sql = "SELECT * FROM bookings WHERE user_id = ?"
+    args: list = [user_id]
+    if only_active:
+        sql += f" AND status IN ({','.join('?' for _ in STATUSES_ACTIVE)})"
+        args += list(STATUSES_ACTIVE)
+    sql += " ORDER BY date DESC, time DESC"
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        return [dict(r) for r in await (await db.execute(sql, args)).fetchall()]
+
+
+async def is_blocked(user_id: int) -> bool:
+    async with aiosqlite.connect(DB_PATH) as db:
+        row = await (await db.execute(
+            "SELECT blocked FROM clients WHERE user_id = ?", (user_id,))).fetchone()
+    return bool(row and row[0])
+
+
+# ──────────────────────────────
+# Отзывы: список и удаление
+# ──────────────────────────────
+
+async def list_reviews(limit: int = 500) -> list[dict]:
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        rows = await (await db.execute(
+            """
+            SELECT r.*, c.name AS client_name, c.username AS client_username
+            FROM reviews r LEFT JOIN clients c ON c.user_id = r.user_id
+            ORDER BY r.id DESC LIMIT ?
+            """, (limit,))).fetchall()
+    return [dict(r) for r in rows]
+
+
+async def get_review(review_id: int) -> dict | None:
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        row = await (await db.execute("SELECT * FROM reviews WHERE id = ?", (review_id,))).fetchone()
+    return dict(row) if row else None
+
+
+async def delete_review(review_id: int) -> None:
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("DELETE FROM reviews WHERE id = ?", (review_id,))
+        await db.commit()
+
+
+# ──────────────────────────────
+# УДАЛЕНИЕ ДАННЫХ (панель администратора)
+# ──────────────────────────────
+
+async def delete_booking(booking_id: int) -> None:
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("DELETE FROM bookings WHERE id = ?", (booking_id,))
+        await db.commit()
+
+
+async def delete_client(user_id: int) -> dict:
+    """Удалить клиента вместе с его бронями и отзывами. Возвращает счётчики."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        cur = await db.execute("DELETE FROM bookings WHERE user_id = ?", (user_id,))
+        bookings = cur.rowcount
+        cur = await db.execute("DELETE FROM reviews WHERE user_id = ?", (user_id,))
+        reviews = cur.rowcount
+        await db.execute("DELETE FROM clients WHERE user_id = ?", (user_id,))
+        await db.commit()
+    return {"bookings": bookings, "reviews": reviews}
+
+
+async def delete_tariff(tariff_id: int) -> None:
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("DELETE FROM admin_tariffs WHERE id = ?", (tariff_id,))
+        await db.commit()
+
+
+async def delete_faq(faq_id: int) -> None:
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("DELETE FROM admin_faq WHERE id = ?", (faq_id,))
+        await db.commit()
+
+
+async def wipe(what: str) -> int:
+    """
+    Массовое удаление из панели. `what`:
+      bookings | reviews | clients | demo | all
+    Возвращает количество удалённых строк.
+    """
+    demo_ids = (900000001, 900000002, 900000003)
+    async with aiosqlite.connect(DB_PATH) as db:
+        removed = 0
+        if what in ("bookings", "all"):
+            removed += (await db.execute("DELETE FROM bookings")).rowcount
+        if what in ("reviews", "all"):
+            removed += (await db.execute("DELETE FROM reviews")).rowcount
+        if what in ("clients", "all"):
+            removed += (await db.execute("DELETE FROM clients")).rowcount
+            if what == "clients":
+                await db.execute("DELETE FROM bookings")
+                await db.execute("DELETE FROM reviews")
+        if what == "demo":
+            marks = ",".join("?" for _ in demo_ids)
+            removed += (await db.execute(
+                f"DELETE FROM clients WHERE user_id IN ({marks})", demo_ids)).rowcount
+            await db.execute(f"DELETE FROM bookings WHERE user_id IN ({marks})", demo_ids)
+            await db.execute(f"DELETE FROM reviews WHERE user_id IN ({marks})", demo_ids)
+        await db.commit()
+    return removed
+
+
+# ──────────────────────────────
+# Журнал действий администраторов
+# ──────────────────────────────
+
+async def log_audit(user_id: int, action: str) -> None:
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "INSERT INTO audit_log (user_id, action, created_at) VALUES (?, ?, ?)",
+            (user_id, action, now().isoformat()),
+        )
+        await db.commit()
+
+
+async def last_audit(limit: int = 20) -> list[dict]:
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        rows = await (await db.execute(
+            "SELECT * FROM audit_log ORDER BY id DESC LIMIT ?", (limit,))).fetchall()
+    return [dict(r) for r in rows]

@@ -109,3 +109,56 @@ async def update_faq(fid: int, answer: str) -> None:
 async def add_faq(question: str, answer: str) -> None:
     async with aiosqlite.connect(DB_PATH) as conn:
         await conn.execute("INSERT INTO admin_faq(question,answer) VALUES(?,?)", (question, answer)); await conn.commit()
+
+
+# ──────────────────────────────
+# Живые настройки, которые читает и клиентская часть
+# (раньше клиент показывал ТАРИФЫ/FAQ из config.py, и правки
+#  администратора никуда не применялись — это был баг)
+# ──────────────────────────────
+
+async def ai_enabled() -> bool:
+    """AI включён и в конфиге (есть ключ), и тумблером в панели."""
+    from app.config import USE_AI
+    if not USE_AI:
+        return False
+    return (await setting("ai_enabled", "1")) == "1"
+
+
+async def club_closed() -> bool:
+    """Клуб поставлен на паузу из панели — приём новых броней закрыт."""
+    return (await setting("club_closed", "0")) == "1"
+
+
+async def club_hours() -> str:
+    """Режим работы: значение из панели, иначе из конфига."""
+    from app.config import CLUB_HOURS
+    return await setting("club_hours", CLUB_HOURS)
+
+
+async def closed_reason() -> str:
+    return await setting("closed_reason", "")
+
+
+async def tariffs_text() -> str:
+    """Текст раздела «💰 Цены» — строится из тарифов в базе."""
+    from app.config import CLUB_NAME
+    items = await tariffs()
+    if not items:
+        return (f"💰 <b>Тарифы клуба {CLUB_NAME}</b>\n\n"
+                "Тарифы уточняйте у администратора.")
+    lines = "\n".join(f"{t['name']} — <b>{t['price']}</b>" for t in items)
+    return (f"💰 <b>Тарифы клуба {CLUB_NAME}</b>\n\n{lines}\n\n"
+            "Забронировать можно кнопкой «🎮 Забронировать» в меню.")
+
+
+async def faq_by_id(faq_id: int) -> dict | None:
+    async with aiosqlite.connect(DB_PATH) as conn:
+        conn.row_factory = aiosqlite.Row
+        row = await (await conn.execute("SELECT * FROM admin_faq WHERE id=?", (faq_id,))).fetchone()
+        return dict(row) if row else None
+
+
+async def knowledge_base() -> tuple[list[dict], list[dict]]:
+    """Тарифы и FAQ из базы — для подсказки AI (чтобы он отвечал по актуальным данным)."""
+    return await tariffs(), await faqs()

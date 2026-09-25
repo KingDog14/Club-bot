@@ -36,12 +36,25 @@ from datetime import timedelta
 def main_menu_kb() -> InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
     kb.button(text=texts.MENU_BOOK, callback_data="m:book")
+    kb.button(text=texts.MENU_MY, callback_data="m:my")
     kb.button(text=texts.MENU_PRICES, callback_data="m:prices")
     kb.button(text=texts.MENU_ADDRESS, callback_data="m:addr")
     kb.button(text=texts.MENU_FAQ, callback_data="m:faq")
     kb.button(text=texts.MENU_CONTACT, callback_data="m:contact")
     kb.button(text=texts.MENU_REVIEW, callback_data="m:review")
-    kb.adjust(1, 2, 2, 1)
+    kb.adjust(1, 1, 2, 2, 1)
+    return kb.as_markup()
+
+
+def my_bookings_kb(bookings: list[dict]) -> InlineKeyboardMarkup:
+    """Список активных броней клиента с возможностью отменить свою бронь."""
+    kb = InlineKeyboardBuilder()
+    for b in bookings:
+        kb.button(text=f"❌ Отменить #{b['id']} · {b['date'][8:10]}.{b['date'][5:7]} {b['time']}",
+                  callback_data=f"my:cancel:{b['id']}")
+    kb.button(text=texts.MENU_BOOK, callback_data="m:book")
+    kb.button(text=texts.MENU_BACK, callback_data="m:home")
+    kb.adjust(1)
     return kb.as_markup()
 
 
@@ -200,10 +213,17 @@ def review_maps_kb() -> InlineKeyboardMarkup | None:
 # FAQ
 # ──────────────────────────────
 
-def faq_kb() -> InlineKeyboardMarkup:
+def faq_kb(items: list[dict] | None = None) -> InlineKeyboardMarkup:
+    """
+    Кнопки FAQ. Вопросы берутся из базы (их правит администратор в панели),
+    а FAQ_BASE из config.py остаётся только начальным наполнением.
+    """
     kb = InlineKeyboardBuilder()
-    for key, item in FAQ_BASE.items():
-        kb.button(text=item["question"], callback_data=f"f:{key}")
+    if items is None:
+        items = [{"id": key, "question": value["question"]}
+                 for key, value in FAQ_BASE.items()]
+    for item in items:
+        kb.button(text=item["question"][:60], callback_data=f"f:{item['id']}")
     kb.button(text=texts.MENU_BACK, callback_data="m:home")
     kb.adjust(1)
     return kb.as_markup()
@@ -238,9 +258,9 @@ def address_kb() -> InlineKeyboardMarkup:
     return kb.as_markup()
 
 
-def contact_kb() -> InlineKeyboardMarkup:
+def contact_kb(admin_id: int = ADMIN_ID) -> InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
-    kb.button(text=texts.BTN_ADMIN_CHAT, url=f"tg://user?id={ADMIN_ID}")
+    kb.button(text=texts.BTN_ADMIN_CHAT, url=f"tg://user?id={admin_id}")
     _social_buttons(kb)
     kb.button(text=texts.MENU_BACK, callback_data="m:home")
     kb.adjust(1)

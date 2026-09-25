@@ -12,12 +12,17 @@ import sys
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
+from aiogram.exceptions import TelegramAPIError
 from aiogram.fsm.storage.memory import MemoryStorage
+from aiogram.types import ErrorEvent
 
 import app.config as config
 import app.database as db
+import app.roles as roles
+from app.bot_commands import apply_all
 from app.handlers import admin, client
 from app.scheduler import restore_jobs, scheduler
+
 
 log = logging.getLogger("bot")
 
@@ -41,10 +46,12 @@ def setup_logging() -> None:
 
 
 async def on_startup(bot: Bot) -> None:
-    """Инициализация: база, демо-данные, планировщик, восстановление задач."""
+    """Инициализация: база, роли, демо-данные, планировщик, восстановление задач."""
     await db.init_db()
+    await roles.init()
     scheduler.start()
     await restore_jobs(bot)
+    await apply_all(bot, roles.admin_ids())
 
     log.info("════════════════════════════════════════")
     log.info("Клуб: %s", config.CLUB_NAME)
@@ -53,9 +60,10 @@ async def on_startup(bot: Bot) -> None:
         log.info("AI: GigaChat, модель %s", config.AI_MODEL)
     else:
         log.info("AI: выключен (бот работает на кнопках)")
+    log.info("Сотрудников с доступом к панели: %s", len(roles.admin_ids()))
     if config.ADMIN_ID == 123456789:
         log.warning("ADMIN_ID не изменён — заявки уходят на вымышленный id. "
-                    "Укажите свой Telegram ID в config.py")
+                    "Укажите свой Telegram ID в .env или app/config.py")
     log.info("Бот запущен. Никогда не останавливайтесь, мечтайте о большем 🚀")
     log.info("════════════════════════════════════════")
 
@@ -78,6 +86,24 @@ async def main() -> None:
     # admin — первым: его команды важнее клиентского фолбэка на любой текст
     dp.include_router(admin.router)
     dp.include_router(client.router)
+
+    @dp.errors()
+    async def on_error(event: ErrorEvent) -> bool:
+        """
+        Бот не должен падать из-за одного плохого апдейта:
+        ошибку пишем в лог, пользователю показываем вежливое сообщение.
+        """
+        log.exception("Ошибка при обработке апдейта: %s", event.exception)
+        update = event.update
+        try:
+            if update.callback_query:
+                await update.callback_query.answer(
+                    "Что-то пошло не так. Попробуйте ещё раз 🙏", show_alert=True)
+            elif update.message:
+                await update.message.answer("Что-то пошло не так. Попробуйте ещё раз 🙏")
+        except TelegramAPIError:
+            pass
+        return True
 
     await on_startup(bot)
     await bot.delete_webhook(drop_pending_updates=True)

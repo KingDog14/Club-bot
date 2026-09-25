@@ -48,3 +48,6 @@ class AdminEditForm(StatesGroup):
     faq_add_question = State()
     faq_add_answer = State()
     month = State()
+    hours = State()           # режим работы клуба
+    closed_reason = State()   # причина паузы (видят клиенты)
+    admin_add = State()       # добавление администратора (ID или @username)
