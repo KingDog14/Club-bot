@@ -1,6 +1,6 @@
 # Python 3.10+
-aiogram>=3.9,<4.0          # Telegram Bot API фреймворк
-aiosqlite>=0.20.0          # асинхронная работа с SQLite
-APScheduler>=3.10.4,<4.0   # планировщик напоминаний и запросов отзывов
-gigachat>=0.1.35           # GigaChat API (Сбер) — единственный AI-провайдер
-python-dotenv>=1.0         # подхват настроек из .env
+aiogram
+aiosqlite
+APScheduler
+gigachat
+python-dotenv
