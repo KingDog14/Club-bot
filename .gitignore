@@ -1,0 +1,11 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.env
+
+# Артефакты работающего бота
+bot.log
+club_bot.db
+*.db-journal
