@@ -9,9 +9,15 @@
   owner — владелец: всё, включая управление админами и удаление данных;
   admin — администратор: брони, клиенты, рассылки, контент.
 
-ADMIN_ID и OWNER_ID из конфига остаются «корневыми» владельцами:
-они автоматически добавляются в базу при старте и не могут быть удалены —
-иначе можно было бы случайно потерять доступ к панели.
+Конфиг задаёт «корневых» сотрудников — они создаются в базе при старте,
+их нельзя удалить из панели, а роль определяется самой переменной:
+  OWNER_ID — 👑 владелец;
+  ADMIN_ID — 👮 администратор.
+Если OWNER_ID не заполнен (осталось значение по умолчанию), владельцем
+становится ADMIN_ID — чтобы доступ к панели нельзя было потерять.
+
+Раньше обе переменные давали роль владельца, из-за чего ADMIN_ID
+неожиданно отображался в панели как «👑 Владелец».
 """
 from __future__ import annotations
 
@@ -28,8 +34,32 @@ ROLE_OWNER = "owner"
 ROLE_ADMIN = "admin"
 ROLE_LABELS = {ROLE_OWNER: "👑 Владелец", ROLE_ADMIN: "👮 Администратор"}
 
-# Корневые владельцы из конфига — удалить их из панели нельзя
-ROOT_IDS: set[int] = {i for i in (ADMIN_ID, OWNER_ID) if i and i > 0}
+# Дефолт из config.py = «переменная не заполнена»
+_PLACEHOLDER_ID = 123456789
+
+
+def _configured(value: int) -> bool:
+    """Переменная заполнена настоящим Telegram ID, а не заглушкой."""
+    return bool(value) and 0 < value != _PLACEHOLDER_ID
+
+
+def _root_roles() -> dict[int, str]:
+    """Конфиг → {user_id: роль}. Роль корневых сотрудников фиксирована."""
+    roots: dict[int, str] = {}
+    if _configured(OWNER_ID):
+        roots[int(OWNER_ID)] = ROLE_OWNER
+    if _configured(ADMIN_ID):
+        # Владелец не настроен — ADMIN_ID подстраховывает и берёт роль
+        # владельца на себя, иначе к панели никто не получит доступ.
+        fallback = ROLE_OWNER if not roots else ROLE_ADMIN
+        roots.setdefault(int(ADMIN_ID), fallback)
+    return roots
+
+
+# Корневые сотрудники из конфига: удалить их из панели нельзя,
+# роль задаётся переменными OWNER_ID (владелец) / ADMIN_ID (админ).
+_ROOT_ROLES: dict[int, str] = _root_roles()
+ROOT_IDS: set[int] = set(_ROOT_ROLES)
 
 # Кэш «user_id → роль», чтобы не ходить в базу на каждое сообщение
 _cache: dict[int, str] = {}
@@ -50,16 +80,24 @@ async def refresh() -> dict[int, str]:
 
 
 async def init() -> None:
-    """Создать корневых владельцев (из конфига) и прогреть кэш."""
+    """Создать корневых сотрудников (из конфига) и прогреть кэш.
+
+    Роль корневых принудительно приводится к конфигу при каждом старте —
+    это заодно чинит базы старых версий, где ADMIN_ID ошибочно
+    записывался владельцем.
+    """
     async with aiosqlite.connect(DB_PATH) as conn:
-        for uid in ROOT_IDS:
+        # Со старых версий могла остаться фантомная запись о незаполненном ID
+        if _PLACEHOLDER_ID not in _ROOT_ROLES:
+            await conn.execute("DELETE FROM admins WHERE user_id = ?", (_PLACEHOLDER_ID,))
+        for uid, role in _ROOT_ROLES.items():
             await conn.execute(
                 """
                 INSERT INTO admins (user_id, role, name, added_by, created_at)
                 VALUES (?, ?, ?, ?, ?)
-                ON CONFLICT(user_id) DO UPDATE SET role = 'owner'
+                ON CONFLICT(user_id) DO UPDATE SET role = ?
                 """,
-                (uid, ROLE_OWNER, "из конфига", 0, now().isoformat()),
+                (uid, role, "из конфига", 0, now().isoformat(), role),
             )
         await conn.commit()
     await refresh()
@@ -84,7 +122,7 @@ def is_owner(user_id: int | None) -> bool:
 
 
 def is_root(user_id: int | None) -> bool:
-    """Владелец из конфига — его нельзя удалить или понизить."""
+    """Сотрудник из конфига: удалить из панели нельзя, роль фиксирована."""
     return int(user_id) in ROOT_IDS if user_id else False
 
 
@@ -130,14 +168,15 @@ async def add_admin(user_id: int, role: str, *, added_by: int,
 
 
 async def set_role(user_id: int, role: str) -> None:
-    if is_root(user_id) and role != ROLE_OWNER:
-        raise PermissionError("Владельца из конфига нельзя понизить")
+    if is_root(user_id):
+        raise PermissionError(
+            "Роль сотрудника из .env задаётся конфигом (OWNER_ID/ADMIN_ID)")
     await add_admin(user_id, role, added_by=0)
 
 
 async def remove_admin(user_id: int) -> None:
     if is_root(user_id):
-        raise PermissionError("Владельца из конфига нельзя удалить")
+        raise PermissionError("Сотрудника из конфига нельзя удалить")
     async with aiosqlite.connect(DB_PATH) as conn:
         await conn.execute("DELETE FROM admins WHERE user_id = ?", (user_id,))
         await conn.commit()

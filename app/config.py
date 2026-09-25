@@ -60,8 +60,8 @@ def _int(name: str, default: int) -> int:
 # ════════════════════════════════════════
 
 BOT_TOKEN = _str("BOT_TOKEN", "СЮДА_ТОКЕН")  # токен бота от @BotFather
-ADMIN_ID = _int("ADMIN_ID", 123456789)       # Telegram ID админа (карточки заявок, команды)
-OWNER_ID = _int("OWNER_ID", 123456789)       # Telegram ID владельца (жалобы 1–3⭐, /stats)
+ADMIN_ID = _int("ADMIN_ID", 123456789)       # Telegram ID корневого АДМИНИСТРАТОРА (👮 в панели)
+OWNER_ID = _int("OWNER_ID", 123456789)       # Telegram ID корневого ВЛАДЕЛЬЦА (👑 в панели)
 
 # ════════════════════════════════════════
 # AI — ТОЛЬКО GigaChat (Сбер)

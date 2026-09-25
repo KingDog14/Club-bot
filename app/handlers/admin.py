@@ -638,6 +638,12 @@ async def admin_card(c: CallbackQuery):
     role = roles.role_of(uid)
     if not role:
         await c.answer("Сотрудник уже удалён", show_alert=True); await screen_admins(c); return
+    if roles.is_root(uid):
+        await show(c, f"👮 <b>Сотрудник {uid}</b>\n\nРоль: {roles.ROLE_LABELS[role]} · из конфига\n\n"
+                      "Этого сотрудника задают переменные ADMIN_ID / OWNER_ID в .env:\n"
+                      "перевести в другую роль или удалить из панели нельзя.",
+                   kb([back("admin:admins")]))
+        return
     other = roles.ROLE_ADMIN if role == roles.ROLE_OWNER else roles.ROLE_OWNER
     await show(c, f"👮 <b>Сотрудник {uid}</b>\n\nРоль: {roles.ROLE_LABELS[role]}",
                kb([[btn(f"🔁 Сделать: {roles.ROLE_LABELS[other]}", f"admin:admin_role:{uid}:{other}")],

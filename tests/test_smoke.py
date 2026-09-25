@@ -56,6 +56,13 @@ async def main() -> None:
         root_protected = True
     check("корневого владельца удалить нельзя", root_protected)
 
+    try:
+        await roles.set_role(1001, roles.ROLE_ADMIN)
+        root_fixed = False
+    except PermissionError:
+        root_fixed = True
+    check("роль корневого сотрудника фиксирована конфигом", root_fixed)
+
     # ── овербукинг ─────────────────────────────────────────
     # Отдельный день, чтобы демо-брони не влияли на расчёт
     from datetime import timedelta
