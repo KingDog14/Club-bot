@@ -227,7 +227,7 @@ _FAQ_SYSTEM = """Ты — ассистент компьютерного клуб
 """
 
 
-def _knowledge_base(faq_base: dict) -> str:
+def _knowledge_base(faq_base: dict, tariffs=None, hours: str | None = None) -> str:
     """
     База знаний для GigaChat: факты о клубе из config.py + FAQ.
     Всё это — данные владельца, а не фантазии модели.
@@ -235,16 +235,17 @@ def _knowledge_base(faq_base: dict) -> str:
     lines = [
         f"Клуб: {CLUB_NAME}",
         f"Адрес: {CLUB_ADDRESS}",
-        f"Режим работы: {CLUB_HOURS}",
+        f"Режим работы: {hours or CLUB_HOURS}",
         f"Телефон: {CLUB_PHONE}",
-        "Тарифы: " + "; ".join(f"{name} — {price}" for name, price in TARIFFS),
+        "Тарифы: " + "; ".join(f"{name} — {price}" for name, price in (tariffs or TARIFFS)),
         "Частые вопросы и ответы:",
     ]
     lines += [f"- {item['question']} {item['answer']}" for item in faq_base.values()]
     return "\n".join(lines)
 
 
-def answer_faq(question: str, faq_base: dict | None = None) -> str:
+def answer_faq(question: str, faq_base: dict | None = None,
+               tariffs=None, hours: str | None = None) -> str:
     """
     Ответить на вопрос клиента строго по faq_base (по умолчанию — FAQ_BASE
     из config.py).
@@ -257,6 +258,6 @@ def answer_faq(question: str, faq_base: dict | None = None) -> str:
     system = _FAQ_SYSTEM.format(
         club=CLUB_NAME,
         phone=CLUB_PHONE,
-        knowledge=_knowledge_base(faq_base),
+        knowledge=_knowledge_base(faq_base, tariffs, hours),
     )
     return _ask(system, question) or AI_UNAVAILABLE

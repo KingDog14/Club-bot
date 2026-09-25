@@ -163,6 +163,10 @@ TIME_PERIODS = {
     "ночь":  ["22:00", "23:00", "00:00"],
 }
 
+# Сколько активных (ожидающих/подтверждённых) броней может держать один клиент.
+# Защита от спама заявками — важна для продакшена.
+MAX_ACTIVE_BOOKINGS = _int("MAX_ACTIVE_BOOKINGS", 3)
+
 REMIND_BEFORE_HOURS = _int("REMIND_BEFORE_HOURS", 2)  # напоминание за N часов до начала
 REVIEW_AFTER_HOURS = _int("REVIEW_AFTER_HOURS", 1)    # запрос отзыва через N часов после конца
 

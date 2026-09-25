@@ -18,8 +18,15 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.date import DateTrigger
 
 import app.database as db
+import app.roles as roles
 import app.texts as texts
-from app.config import ADMIN_ID, REMIND_BEFORE_HOURS, REVIEW_AFTER_HOURS, TIMEZONE
+from app.config import (
+    ADMIN_ID,
+    OWNER_ID,
+    REMIND_BEFORE_HOURS,
+    REVIEW_AFTER_HOURS,
+    TIMEZONE,
+)
 from app.keyboards import rating_kb, reminder_kb
 from app.utils import booking_start_end, day_word, now
 
@@ -145,9 +152,25 @@ async def send_review_request(bot: Bot, booking_id: int) -> None:
         logger.warning("Запрос отзыва по брони #%s не доставлен: %s", booking_id, exc)
 
 
+async def _notify(bot: Bot, ids: list[int], text: str) -> int:
+    delivered = 0
+    for uid in ids:
+        try:
+            await bot.send_message(uid, text)
+            delivered += 1
+        except TelegramAPIError as exc:  # адресат не запускал бота — только лог
+            logger.warning("Не смог отправить уведомление %s: %s", uid, exc)
+    return delivered
+
+
 async def notify_admin(bot: Bot, text: str) -> None:
-    """Служебное уведомление админу (подтверждения/отмены по напоминаниям)."""
-    try:
-        await bot.send_message(ADMIN_ID, text)
-    except TelegramAPIError as exc:  # админ не запускал бота — только лог
-        logger.warning("Не смог отправить уведомление админу: %s", exc)
+    """
+    Служебное уведомление ВСЕМ администраторам (подтверждения/отмены).
+    Список админов управляется из панели, а не только переменными окружения.
+    """
+    await _notify(bot, roles.admin_ids() or [ADMIN_ID], text)
+
+
+async def notify_owners(bot: Bot, text: str) -> None:
+    """Уведомление владельцам (жалобы 1–3⭐ и критичные события).""" 
+    await _notify(bot, roles.owner_ids() or [OWNER_ID], text)
