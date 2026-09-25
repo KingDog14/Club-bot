@@ -17,11 +17,11 @@ from apscheduler.jobstores.base import JobLookupError
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.date import DateTrigger
 
-import database as db
-import texts
-from config import ADMIN_ID, REMIND_BEFORE_HOURS, REVIEW_AFTER_HOURS, TIMEZONE
-from keyboards import rating_kb, reminder_kb
-from utils import booking_start_end, day_word, now
+import app.database as db
+import app.texts as texts
+from app.config import ADMIN_ID, REMIND_BEFORE_HOURS, REVIEW_AFTER_HOURS, TIMEZONE
+from app.keyboards import rating_kb, reminder_kb
+from app.utils import booking_start_end, day_word, now
 
 logger = logging.getLogger(__name__)
 

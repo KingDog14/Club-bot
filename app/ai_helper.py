@@ -28,7 +28,7 @@ import re
 import threading
 from datetime import timedelta
 
-from config import (
+from app.config import (
     AI_API_KEY,
     AI_MODEL,
     AI_SCOPE,
@@ -41,7 +41,7 @@ from config import (
     FAQ_BASE,
     TARIFFS,
 )
-from utils import now
+from app.utils import now
 
 logger = logging.getLogger(__name__)
 

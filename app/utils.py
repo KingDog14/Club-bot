@@ -4,7 +4,7 @@ from __future__ import annotations
 from datetime import date, datetime, time as dtime, timedelta
 from zoneinfo import ZoneInfo
 
-from config import TIMEZONE
+from app.config import TIMEZONE
 
 TZ = ZoneInfo(TIMEZONE)
 

@@ -17,8 +17,8 @@ from datetime import timedelta as _timedelta
 
 import aiosqlite
 
-from config import DB_PATH, SEED_DEMO_DATA
-from utils import now
+from app.config import DB_PATH, SEED_DEMO_DATA
+from app.utils import now
 
 logger = logging.getLogger(__name__)
 

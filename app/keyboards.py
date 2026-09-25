@@ -12,8 +12,8 @@ from aiogram.types import (
 )
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
-import texts
-from config import (
+import app.texts as texts
+from app.config import (
     ADMIN_ID,
     BOOKING_DAYS_AHEAD,
     CLUB_MAPS_URL,
@@ -25,7 +25,7 @@ from config import (
     TIME_PERIODS,
     TIME_SLOTS,
 )
-from utils import WEEKDAYS, today as club_today
+from app.utils import WEEKDAYS, today as club_today
 from datetime import timedelta
 
 

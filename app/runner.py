@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-Точка входа. Запуск:  python bot.py
+Сборка и запуск бота. Точка входа — ../main.py (python main.py).
 
 Бот компьютерного клуба (ДЕМО-ШАБЛОН).
-Настройки — в config.py, тексты — в texts.py, AI (GigaChat) — в ai_helper.py.
+Настройки — в app/config.py, тексты — в app/texts.py, AI (GigaChat) — в app/ai_helper.py.
 """
 import asyncio
 import logging
@@ -14,10 +14,10 @@ from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 from aiogram.fsm.storage.memory import MemoryStorage
 
-import config
-import database as db
-from handlers import admin, client
-from scheduler import restore_jobs, scheduler
+import app.config as config
+import app.database as db
+from app.handlers import admin, client
+from app.scheduler import restore_jobs, scheduler
 
 log = logging.getLogger("bot")
 
@@ -67,8 +67,8 @@ async def main() -> None:
         log.error(
             "Не задан BOT_TOKEN!\n"
             "1) Откройте @BotFather в Telegram → /newbot → получите токен\n"
-            "2) Вставьте его в config.py:  BOT_TOKEN = \"123456:ABC...\"\n"
-            "3) Запустите снова: python bot.py"
+            "2) Вставьте его в .env (BOT_TOKEN=...) или в app/config.py\n"
+            "3) Запустите снова: python main.py"
         )
         sys.exit(1)
 

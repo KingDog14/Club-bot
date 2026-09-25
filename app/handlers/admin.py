@@ -19,13 +19,13 @@ from aiogram.filters import BaseFilter, Command
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 
-import database as db
-import texts
-from config import ADMIN_ID, CLUB_PCS_TOTAL, CLUB_PHONE, OWNER_ID
-from keyboards import broadcast_confirm_kb
-from scheduler import cancel_booking_jobs, schedule_booking_jobs
-from states import BroadcastForm
-from utils import MONTHS, WEEKDAYS, end_time_str, human_date, load_bar, now
+import app.database as db
+import app.texts as texts
+from app.config import ADMIN_ID, CLUB_PCS_TOTAL, CLUB_PHONE, OWNER_ID
+from app.keyboards import broadcast_confirm_kb
+from app.scheduler import cancel_booking_jobs, schedule_booking_jobs
+from app.states import BroadcastForm
+from app.utils import MONTHS, WEEKDAYS, end_time_str, human_date, load_bar, now
 
 from .common import edit_card_verdict, plural
 

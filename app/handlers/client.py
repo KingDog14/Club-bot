@@ -21,10 +21,10 @@ from aiogram.filters import Command, CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message, ReplyKeyboardRemove, User
 
-import ai_helper
-import database as db
-import texts
-from config import (
+import app.ai_helper as ai_helper
+import app.database as db
+import app.texts as texts
+from app.config import (
     ADMIN_ID,
     CLUB_MAPS_URL,
     FAQ_BASE,
@@ -32,7 +32,7 @@ from config import (
     TIME_PERIODS,
     USE_AI,
 )
-from keyboards import (
+from app.keyboards import (
     address_kb,
     admin_booking_kb,
     ai_fail_kb,
@@ -52,9 +52,9 @@ from keyboards import (
     review_skip_kb,
     times_kb,
 )
-from scheduler import cancel_booking_jobs, notify_admin
-from states import BookingForm, FaqForm, ReviewForm
-from utils import human_date, iso_days_ahead, now
+from app.scheduler import cancel_booking_jobs, notify_admin
+from app.states import BookingForm, FaqForm, ReviewForm
+from app.utils import human_date, iso_days_ahead, now
 
 from .common import edit_or_send
 

@@ -59,7 +59,7 @@ cp .env.example .env   # и впишите свои значения
    ботам писать первыми — иначе карточки заявок админу не дойдут.
 
 ```bash
-python bot.py
+python main.py
 ```
 
 Бонус: **ключ GigaChat не обязателен** — без него бот полностью работает на
@@ -234,21 +234,25 @@ OWNER_ID=ваш_числовой_id
 
 ```
 Club-bot/
-├── bot.py             # точка входа (python bot.py), логирование, запуск
-├── config.py          # ⚙️ все настройки (можно переопределить через .env)
-├── .env.example       # шаблон .env → cp .env.example .env и заполнить
-├── .env               # рабочие секреты (НЕ коммитится, в .gitignore)
-├── texts.py           # ✏️ все тексты бота
-├── states.py          # FSM-состояния (шаги диалогов)
-├── utils.py           # даты/время/форматирование
-├── database.py        # SQLite (aiosqlite): таблицы + демо-данные
-├── keyboards.py       # все клавиатуры (пустая ссылка = нет кнопки)
-├── ai_helper.py       # 🤖 AI-модуль: ТОЛЬКО GigaChat, безопасные заглушки
-├── scheduler.py       # напоминания за 2 ч и запросы отзывов (APScheduler)
-├── handlers/
-│   ├── client.py      # меню, бронирование (кнопки + AI), FAQ, отзывы
-│   ├── admin.py       # карточки заявок, /today /week /stats /broadcast
-│   └── common.py      # общие помощники обработчиков
+├── main.py               # 🚀 точка входа: python main.py (тонкий лаунчер)
+├── app/                  # 📦 весь код — в одном пакете
+│   ├── __init__.py       # описание пакета + версия
+│   ├── runner.py         # сборка, логирование, запуск polling
+│   ├── config.py         # ⚙️ все настройки (переопределяются через .env)
+│   ├── texts.py          # ✏️ все тексты бота
+│   ├── states.py         # FSM-состояния (шаги диалогов)
+│   ├── utils.py          # даты/время/форматирование
+│   ├── database.py       # SQLite (aiosqlite): таблицы + демо-данные
+│   ├── keyboards.py      # все клавиатуры (пустая ссылка = нет кнопки)
+│   ├── ai_helper.py      # 🤖 AI-модуль: ТОЛЬКО GigaChat, безопасные заглушки
+│   ├── scheduler.py      # напоминания за 2 ч и запросы отзывов (APScheduler)
+│   └── handlers/         # обработчики
+│       ├── client.py     # меню, бронирование (кнопки + AI), FAQ, отзывы
+│       ├── admin.py      # карточки заявок, /today /week /stats /broadcast
+│       └── common.py     # общие помощники обработчиков
+├── .env.example          # шаблон .env → cp .env.example .env и заполнить
+├── .env                  # рабочие секреты (НЕ коммитится, в .gitignore)
+├── .gitignore
 ├── requirements.txt
 └── README.md
 ```
@@ -299,7 +303,7 @@ After=network.target
 WorkingDirectory=/opt/club-bot
 # не обязательно: бот сам подхватит .env из рабочей папки
 EnvironmentFile=/opt/club-bot/.env
-ExecStart=/opt/club-bot/venv/bin/python bot.py
+ExecStart=/opt/club-bot/venv/bin/python main.py
 Restart=always
 RestartSec=5
 
@@ -318,7 +322,7 @@ journalctl -u club-bot -f   # логи (и tail -f /opt/club-bot/bot.log)
    в `.gitignore`!).
 2. **railway.app** → New Project → **Deploy from GitHub repo**.
 3. Railway сам определит Python и установит `requirements.txt`;
-   Start Command: `python bot.py`.
+   Start Command: `python main.py`.
 4. **Settings → Variables** задайте переменные как в `.env.example`:
    минимум `BOT_TOKEN`, `ADMIN_ID`, `OWNER_ID` (и `AI_API_KEY` для AI).
    Они имеют приоритет над `config.py`, файлы править не нужно.

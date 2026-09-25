@@ -3,7 +3,7 @@
 Чтобы адаптировать бота под клиента, правьте формулировки здесь,
 не трогая логику в handlers/.
 """
-from config import (
+from app.config import (
     CLUB_ADDRESS,
     CLUB_HOURS,
     CLUB_NAME,
