@@ -29,7 +29,22 @@ class ReviewForm(StatesGroup):
 
 
 class BroadcastForm(StatesGroup):
-    """Рассылка админом."""
+    """Пошаговая рассылка админом."""
 
-    text = State()       # ожидание сообщения для рассылки
+    content = State()    # ожидание текста или фото с подписью
     confirm = State()    # подтверждение отправки
+
+
+class AdminEditForm(StatesGroup):
+    """Ввод нового значения при редактировании админом."""
+
+    booking_value = State()
+    client_search = State()
+    client_message = State()
+    booking_message = State()
+    tariff_value = State()
+    tariff_add = State()
+    faq_answer = State()
+    faq_add_question = State()
+    faq_add_answer = State()
+    month = State()
