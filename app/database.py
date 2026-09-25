@@ -70,6 +70,23 @@ CREATE TABLE IF NOT EXISTS reviews (
     created_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS admin_settings (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS admin_tariffs (
+    id    INTEGER PRIMARY KEY AUTOINCREMENT,
+    name  TEXT NOT NULL,
+    price TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS admin_faq (
+    id       INTEGER PRIMARY KEY AUTOINCREMENT,
+    question TEXT NOT NULL,
+    answer   TEXT NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_bookings_date ON bookings(date);
 CREATE INDEX IF NOT EXISTS idx_bookings_status ON bookings(status);
 """
@@ -83,6 +100,10 @@ async def init_db() -> None:
     """Создать таблицы (если их нет) и предзаполнить демо-данными."""
     async with aiosqlite.connect(DB_PATH) as db:
         await db.executescript(_SCHEMA)
+        # Неблокирующая миграция: старые базы продолжают работать.
+        columns = {row[1] for row in await (await db.execute("PRAGMA table_info(clients) ")).fetchall()}
+        if "blocked" not in columns:
+            await db.execute("ALTER TABLE clients ADD COLUMN blocked INTEGER NOT NULL DEFAULT 0")
         await db.commit()
     if SEED_DEMO_DATA:
         await _seed_demo_data()
