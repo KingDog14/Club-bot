@@ -66,6 +66,19 @@ async def main() -> None:
     free_later = await db.pcs_free(today, "23:00", 1, CLUB_PCS_TOTAL)
     check("непересекающееся время свободно", free_later == CLUB_PCS_TOTAL)
 
+    # ── персональные данные: согласие (152-ФЗ) ─────────────
+    check("демо-клиенты помечены как давшие согласие", await db.has_consent(900000001))
+    check("новый пользователь — без согласия", not await db.has_consent(6001))
+    await db.grant_consent(6001, "1.0", "https://example.com/policy")
+    check("нажатие «Начать» фиксируется", await db.has_consent(6001))
+    info = await db.consent_info(6001)
+    check("версия и ссылка на политику сохраняются",
+          bool(info) and info["version"] == "1.0"
+          and info["policy_url"] == "https://example.com/policy")
+    await db.grant_consent(6001, "1.1")
+    check("повторное согласие пишется в историю",
+          (await db.consent_info(6001))["version"] == "1.1")
+
     # ── удаление данных ────────────────────────────────────
     bid = await db.create_booking(5002, today, "10:00", 1, 1)
     await db.delete_booking(bid)
@@ -77,11 +90,14 @@ async def main() -> None:
     check("отзыв удаляется", await db.get_review(reviews[0]["id"]) is None)
 
     await db.upsert_client(5003, "user", "Тест")
+    await db.grant_consent(5003, "1.0")
     await db.create_booking(5003, today, "11:00", 1, 1)
     await db.add_review(5003, 4)
     stats = await db.delete_client(5003)
-    check("клиент удаляется вместе с бронями и отзывами",
-          await db.get_client(5003) is None and stats["bookings"] == 1 and stats["reviews"] == 1)
+    check("клиент удаляется вместе с бронями, отзывами и согласием",
+          await db.get_client(5003) is None and stats["bookings"] == 1
+          and stats["reviews"] == 1 and stats["consents"] == 1
+          and not await db.has_consent(5003))
 
     tariffs = await ad.tariffs()
     await db.delete_tariff(tariffs[0]["id"])
@@ -92,7 +108,8 @@ async def main() -> None:
     check("вопрос FAQ удаляется", len(await ad.faqs()) == len(faqs) - 1)
 
     await db.wipe("demo")
-    check("демо-данные вычищаются одной кнопкой", await db.get_client(900000001) is None)
+    check("демо-данные вычищаются одной кнопкой",
+          await db.get_client(900000001) is None and not await db.has_consent(900000001))
 
     # ── живой контент и настройки ──────────────────────────
     await ad.add_tariff("🔥 Турнир", "1500 ₽")
@@ -112,7 +129,9 @@ async def main() -> None:
     check("журнал действий пишется", (await db.last_audit(1))[0]["action"] == "тест")
 
     await db.wipe("all")
-    check("полная очистка базы работает", not await db.list_reviews() and not await db.get_client(5001))
+    check("полная очистка базы работает",
+          not await db.list_reviews() and not await db.get_client(5001)
+          and not await db.has_consent(6001))
 
     print("\n" + ("ВСЁ ПРОШЛО ✅" if not failures else f"ПРОВАЛЕНО: {failures}"))
     sys.exit(1 if failures else 0)

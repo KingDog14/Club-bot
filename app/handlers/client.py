@@ -31,8 +31,10 @@ from app.config import (
     CLUB_MAPS_URL,
     CLUB_PCS_TOTAL,
     CLUB_PHONE,
+    CONSENT_VERSION,
     FAQ_BASE,
     MAX_ACTIVE_BOOKINGS,
+    PRIVACY_POLICY_URL,
     TIME_PERIODS,
     USE_AI,
 )
@@ -43,6 +45,7 @@ from app.keyboards import (
     back_menu_kb,
     book_mode_kb,
     confirm_kb,
+    consent_kb,
     contact_kb,
     dates_kb,
     durations_kb,
@@ -80,9 +83,39 @@ router.callback_query.outer_middleware(ClientAreaMiddleware())
 @router.message(CommandStart())
 async def cmd_start(message: Message, state: FSMContext) -> None:
     await state.clear()
+    # 152-ФЗ: /start — ещё НЕ согласие. Пока кнопка «Начать» не нажата,
+    # данные клиента не сохраняются — показываем только экран согласия.
+    if not await db.has_consent(message.from_user.id):
+        await message.answer(texts.T(texts.consent_text()), reply_markup=consent_kb())
+        return
     await db.upsert_client(message.from_user.id, message.from_user.username,
                            message.from_user.full_name)
     await message.answer(texts.T(texts.WELCOME), reply_markup=main_menu_kb())
+
+
+@router.callback_query(F.data == "c:agree")
+async def consent_agree(cb: CallbackQuery, state: FSMContext) -> None:
+    """
+    Кнопка «✅ Начать» на экране согласия — это согласие на обработку
+    персональных данных (152-ФЗ). Фиксируем его в таблице consents
+    (доказательная база оператора) и только после этого сохраняем
+    имя/username — обработка данных начинается с этого момента.
+    """
+    await state.clear()
+    await db.grant_consent(cb.from_user.id, CONSENT_VERSION, PRIVACY_POLICY_URL)
+    await db.upsert_client(cb.from_user.id, cb.from_user.username, cb.from_user.full_name)
+    logger.info("Согласие на обработку ПДн получено: %s (v%s)",
+                cb.from_user.id, CONSENT_VERSION)
+    await edit_or_send(cb, texts.T(texts.WELCOME), reply_markup=main_menu_kb())
+    await cb.answer(texts.CONSENT_ACCEPTED_TOAST)
+
+
+@router.callback_query(F.data == "c:decline")
+async def consent_decline(cb: CallbackQuery, state: FSMContext) -> None:
+    """Отказ: данные не собираются, брони недоступны — до нажатия «Начать»."""
+    await state.clear()
+    await edit_or_send(cb, texts.T(texts.CONSENT_DECLINED), reply_markup=consent_kb())
+    await cb.answer()
 
 
 @router.message(Command("cancel"))
