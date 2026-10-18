@@ -6,7 +6,7 @@
   bookings — id, user_id, date, time, duration, pcs, status, created_at
   reviews  — id, user_id, rating, text, created_at
   consents — журнал согласий на обработку персональных данных (152-ФЗ):
-             кто нажал «Начать», когда, версия текста и ссылка на политику
+             кто нажал «Я согласен», когда, версия текста и ссылка на политику
 
 При первом запуске база предзаполняется ДЕМО-данными (SEED_DEMO_DATA = True),
 чтобы владелец клуба сразу увидел /today, /week и /stats «живыми».
@@ -106,14 +106,14 @@ CREATE TABLE IF NOT EXISTS audit_log (
 );
 
 -- Согласия на обработку персональных данных (152-ФЗ).
--- Каждое нажатие кнопки «Начать» на экране согласия — новая строка:
+-- Каждое нажатие кнопки «Я согласен» на экране согласия — новая строка:
 -- оператору нужна доказательная база (кто, когда, какой версии согласился).
 CREATE TABLE IF NOT EXISTS consents (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id    INTEGER NOT NULL,
     version    TEXT NOT NULL,           -- версия текста согласия (CONSENT_VERSION)
     policy_url TEXT,                    -- ссылка на политику на момент согласия
-    created_at TEXT NOT NULL            -- ISO-время нажатия «Начать»
+    created_at TEXT NOT NULL            -- ISO-время нажатия «Я согласен»
 );
 
 CREATE INDEX IF NOT EXISTS idx_bookings_date ON bookings(date);
@@ -139,6 +139,9 @@ async def init_db() -> None:
         review_columns = {row[1] for row in await (await db.execute("PRAGMA table_info(reviews) ")).fetchall()}
         if "booking_id" not in review_columns:
             await db.execute("ALTER TABLE reviews ADD COLUMN booking_id INTEGER")
+        consent_columns = {row[1] for row in await (await db.execute("PRAGMA table_info(consents)")).fetchall()}
+        if "revoked_at" not in consent_columns:
+            await db.execute("ALTER TABLE consents ADD COLUMN revoked_at TEXT")
         await db.commit()
     if SEED_DEMO_DATA:
         await _seed_demo_data()
@@ -170,7 +173,7 @@ async def _seed_demo_data() -> None:
             demo_clients,
         )
 
-        # Демо-клиенты прошли экран согласия (152-ФЗ): нажали «Начать»
+        # Демо-клиенты прошли экран согласия (152-ФЗ): нажали «Я согласен»
         demo_ids = [row[0] for row in demo_clients]
         await db.executemany(
             "INSERT INTO consents (user_id, version, policy_url, created_at)"
@@ -210,7 +213,7 @@ async def _seed_demo_data() -> None:
 
 async def grant_consent(user_id: int, version: str, policy_url: str | None = None) -> None:
     """
-    Зафиксировать согласие — нажатие кнопки «✅ Начать» на экране согласия.
+    Зафиксировать согласие — нажатие кнопки «✅ Я согласен» на экране согласия.
     Каждое нажатие пишется НОВОЙ строкой: это доказательная база оператора
     (кто, когда, какой версии текста и с какой политикой согласился).
     """
@@ -224,12 +227,24 @@ async def grant_consent(user_id: int, version: str, policy_url: str | None = Non
 
 
 async def has_consent(user_id: int) -> bool:
-    """Есть ли у пользователя согласие (хотя бы одно нажатие «Начать»)."""
+    """Есть ли у пользователя согласие (хотя бы одно нажатие «Я согласен»)."""
     async with aiosqlite.connect(DB_PATH) as db:
         cur = await db.execute(
-            "SELECT 1 FROM consents WHERE user_id = ? LIMIT 1", (user_id,)
+            "SELECT 1 FROM consents WHERE user_id = ? AND revoked_at IS NULL LIMIT 1", (user_id,)
         )
         return await cur.fetchone() is not None
+
+
+async def revoke_consent(user_id: int) -> None:
+    """Отметить отзыв в журнале и удалить телефон одной транзакцией."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("BEGIN IMMEDIATE")
+        await db.execute(
+            "UPDATE consents SET revoked_at = ? WHERE user_id = ? AND revoked_at IS NULL",
+            (now().isoformat(), user_id),
+        )
+        await db.execute("UPDATE clients SET phone = NULL WHERE user_id = ?", (user_id,))
+        await db.commit()
 
 
 async def consent_info(user_id: int) -> dict | None:

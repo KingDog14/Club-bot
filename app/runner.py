@@ -63,10 +63,13 @@ async def on_startup(bot: Bot) -> None:
     if config.PRIVACY_POLICY_URL:
         log.info("Политика обработки ПДн: %s (согласие v%s)",
                  config.PRIVACY_POLICY_URL, config.CONSENT_VERSION)
+    elif config.DEMO_MODE:
+        log.warning("Демо-режим: PRIVACY_POLICY_URL не задан, согласия разрешены "
+                    "только для демонстрации с вымышленными данными.")
     else:
         log.warning(
             "PRIVACY_POLICY_URL не задан — кнопка политики обработки персональных "
-            "данных не показывается. Политику предоставляет клуб (оператор ПДн): "
+            "данных не показывается, приём новых согласий заблокирован. "
             "впишите ссылку в PRIVACY_POLICY_URL (.env или app/config.py)")
     log.info("Сотрудников с доступом к панели: %s", len(roles.admin_ids()))
     if config.ADMIN_ID == 123456789:

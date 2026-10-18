@@ -23,6 +23,7 @@ from app.config import (
     FAQ_BASE,
     PCS_VARIANTS,
     PRIVACY_POLICY_URL,
+    DEMO_MODE,
     TIME_PERIODS,
     TIME_SLOTS,
 )
@@ -36,13 +37,14 @@ from datetime import timedelta
 
 def consent_kb() -> InlineKeyboardMarkup:
     """
-    Экран согласия: кнопка «✅ Начать» — это согласие на обработку
+    Экран согласия: кнопка «✅ Я согласен» — это согласие на обработку
     персональных данных (нажимать её обязательно — одного /start мало).
     Кнопка политики появляется, когда оператор (клуб) вписал ссылку
     в PRIVACY_POLICY_URL; политику можно открыть ДО согласия.
     """
     kb = InlineKeyboardBuilder()
-    kb.button(text=texts.BTN_CONSENT_START, callback_data="c:agree")
+    if PRIVACY_POLICY_URL or DEMO_MODE:
+        kb.button(text=texts.BTN_CONSENT_START, callback_data="c:agree:v2")
     if PRIVACY_POLICY_URL:
         kb.button(text=texts.BTN_POLICY, url=PRIVACY_POLICY_URL)
     kb.button(text=texts.BTN_CONSENT_DECLINE, callback_data="c:decline")
@@ -69,6 +71,7 @@ def main_menu_kb() -> InlineKeyboardMarkup:
         kb.adjust(1, 1, 2, 2, 1, 1)
     else:
         kb.adjust(1, 1, 2, 2, 1)
+    kb.row(InlineKeyboardButton(text=texts.MENU_REVOKE, callback_data="c:revoke"))
     return kb.as_markup()
 
 
