@@ -17,6 +17,7 @@ import app.database as db
 import app.roles as roles
 import app.texts as texts
 from app.config import CLUB_PHONE
+from app.keyboards import consent_kb
 
 logger = logging.getLogger(__name__)
 
@@ -38,7 +39,9 @@ class ClientAreaMiddleware(BaseMiddleware):
     Пропускает в клиентские хендлеры только клиентов:
 
     • сотрудник клуба (owner/admin) получает подсказку открыть панель;
-    • заблокированный клиент получает вежливый отказ.
+    • заблокированный клиент получает вежливый отказ;
+    • клиент, не нажавший «Начать» на экране согласия (152-ФЗ), не проходит
+      дальше: данные не собираются, доступны только /start и кнопки согласия.
     """
 
     async def __call__(
@@ -59,7 +62,36 @@ class ClientAreaMiddleware(BaseMiddleware):
             await _reply(event, texts.BLOCKED.format(phone=CLUB_PHONE))
             return None
 
+        # 152-ФЗ: до нажатия «Начать» персональные данные не обрабатываются.
+        if not await db.has_consent(user.id):
+            return await _consent_gate(event, data, handler)
+
         return await handler(event, data)
+
+
+async def _consent_gate(
+    event: TelegramObject,
+    data: dict[str, Any],
+    handler: Callable[[TelegramObject, dict[str, Any]], Awaitable[Any]],
+) -> Any:
+    """
+    Пользователь ещё не дал согласие. Пропускаем только сам экран согласия:
+    /start (его обработчик покажет согласие) и кнопки «c:» («Начать» /
+    «Отказаться»). На всё остальное — снова экран согласия или подсказка.
+    """
+    if _is_callback(event):
+        if (getattr(event, "data", "") or "").startswith("c:"):
+            return await handler(event, data)
+        await event.answer(texts.CONSENT_REQUIRED, show_alert=True)
+        return None
+
+    if (getattr(event, "text", "") or "").startswith("/start"):
+        return await handler(event, data)
+
+    # Любой текст/контакт до согласия → показываем экран согласия с кнопкой
+    if hasattr(event, "answer"):
+        await event.answer(texts.T(texts.consent_text()), reply_markup=consent_kb())
+    return None
 
 
 class AdminAreaMiddleware(BaseMiddleware):

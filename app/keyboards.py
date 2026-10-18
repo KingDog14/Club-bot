@@ -22,11 +22,32 @@ from app.config import (
     DURATIONS,
     FAQ_BASE,
     PCS_VARIANTS,
+    PRIVACY_POLICY_URL,
     TIME_PERIODS,
     TIME_SLOTS,
 )
 from app.utils import WEEKDAYS, today as club_today
 from datetime import timedelta
+
+
+# ──────────────────────────────
+# Согласие на обработку персональных данных (152-ФЗ)
+# ──────────────────────────────
+
+def consent_kb() -> InlineKeyboardMarkup:
+    """
+    Экран согласия: кнопка «✅ Начать» — это согласие на обработку
+    персональных данных (нажимать её обязательно — одного /start мало).
+    Кнопка политики появляется, когда оператор (клуб) вписал ссылку
+    в PRIVACY_POLICY_URL; политику можно открыть ДО согласия.
+    """
+    kb = InlineKeyboardBuilder()
+    kb.button(text=texts.BTN_CONSENT_START, callback_data="c:agree")
+    if PRIVACY_POLICY_URL:
+        kb.button(text=texts.BTN_POLICY, url=PRIVACY_POLICY_URL)
+    kb.button(text=texts.BTN_CONSENT_DECLINE, callback_data="c:decline")
+    kb.adjust(1)
+    return kb.as_markup()
 
 
 # ──────────────────────────────
@@ -42,7 +63,12 @@ def main_menu_kb() -> InlineKeyboardMarkup:
     kb.button(text=texts.MENU_FAQ, callback_data="m:faq")
     kb.button(text=texts.MENU_CONTACT, callback_data="m:contact")
     kb.button(text=texts.MENU_REVIEW, callback_data="m:review")
-    kb.adjust(1, 1, 2, 2, 1)
+    if PRIVACY_POLICY_URL:
+        # Ссылка на политику — и в меню бота (152-ФЗ)
+        kb.button(text=texts.MENU_POLICY, url=PRIVACY_POLICY_URL)
+        kb.adjust(1, 1, 2, 2, 1, 1)
+    else:
+        kb.adjust(1, 1, 2, 2, 1)
     return kb.as_markup()
 
 
@@ -248,6 +274,8 @@ def _social_buttons(kb: InlineKeyboardBuilder) -> None:
         kb.button(text=texts.BTN_VK, url=CLUB_VK_URL)
     if CLUB_SITE_URL:
         kb.button(text=texts.BTN_SITE, url=CLUB_SITE_URL)
+    if PRIVACY_POLICY_URL:
+        kb.button(text=texts.BTN_POLICY, url=PRIVACY_POLICY_URL)
 
 
 def address_kb() -> InlineKeyboardMarkup:

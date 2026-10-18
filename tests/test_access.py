@@ -38,6 +38,7 @@ class FakeUser:
 @dataclass
 class FakeMessage:
     from_user: FakeUser
+    text: str = ""
     replies: list = field(default_factory=list)
 
     async def answer(self, text, **kw):
@@ -71,6 +72,7 @@ async def main() -> None:
     await roles.init()
     await roles.add_admin(2002, roles.ROLE_ADMIN, added_by=1001)
     await db.upsert_client(3003, "client", "Клиент")
+    await db.grant_consent(3003, "1.0")  # нажал «Начать» на экране согласия
     await db.upsert_client(4004, "banned", "Забаненный")
     import app.admin_data as ad
     await ad.set_blocked(4004, True)
@@ -88,6 +90,23 @@ async def main() -> None:
     blocked = FakeMessage(FakeUser(4004))
     check("заблокированный клиент не проходит", not await run(client_mw, blocked))
     check("заблокированному отвечают текстом", bool(blocked.replies))
+
+    # Согласие на обработку персональных данных (152-ФЗ):
+    # без нажатия «Начать» клиент не проходит, данные не собираются
+    no_consent = FakeCallback(FakeUser(5005))
+    check("клиент без согласия не попадает в меню", not await run(client_mw, no_consent))
+    check("без согласия предлагают дать согласие",
+          "согласи" in (no_consent.alerts[0] if no_consent.alerts else "").lower())
+    check("кнопка «Начать» проходит без согласия",
+          await run(client_mw, FakeCallback(FakeUser(5005), "c:agree")))
+    check("/start проходит — покажет экран согласия",
+          await run(client_mw, FakeMessage(FakeUser(5005), text="/start")))
+    plain = FakeMessage(FakeUser(5005), text="хочу забронировать")
+    check("текст без согласия не проходит", not await run(client_mw, plain))
+    check("на текст без согласия показывают экран согласия", bool(plain.replies))
+    await db.grant_consent(5005, "1.0")
+    check("после «Начать» клиент попадает в меню",
+          await run(client_mw, FakeCallback(FakeUser(5005), "m:book")))
 
     # Админская зона
     check("админ проходит в панель", await run(admin_mw, FakeCallback(FakeUser(2002), "admin:home")))

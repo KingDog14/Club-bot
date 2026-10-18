@@ -223,7 +223,9 @@ async def client_card(c):
     uid=int(c.data.rsplit(':',1)[1]); x=await db.get_client(uid)
     if not x: await c.answer("Клиент не найден",show_alert=True); return
     rating=await ad.client_rating(uid); username=f"@{x['username']}" if x.get('username') else "без username"
-    text=f"👤 <b>{x.get('name') or 'Без имени'}</b> ({username})\n📞 {x.get('phone') or 'не указан'}\n🎮 {x['visits']} визитов\n📅 Последний: {x.get('last_visit') or 'нет'}\n⭐ Средняя оценка: {rating or 'нет'}"
+    consent=await db.consent_info(uid)
+    consent_line=f"🛡 Согласие на ПДн: {consent['created_at'][:16].replace('T',' ')} (v{consent['version']})" if consent else "🛡 Согласие на ПДн: не зафиксировано"
+    text=f"👤 <b>{x.get('name') or 'Без имени'}</b> ({username})\n📞 {x.get('phone') or 'не указан'}\n🎮 {x['visits']} визитов\n📅 Последний: {x.get('last_visit') or 'нет'}\n⭐ Средняя оценка: {rating or 'нет'}\n{consent_line}"
     block="✅ Разблокировать" if x.get('blocked') else "🚫 Заблокировать"
     await show(c,text,kb([[btn("📩 Написать",f"admin:client_message:{uid}"),btn("📜 История броней",f"admin:client_history:{uid}:0")],[btn(block,f"admin:client_block:{uid}"),btn("🗑 Удалить клиента",f"admin:ask:client_del:{uid}")],back("admin:clients")]))
 @router.callback_query(F.data.startswith("admin:client_message:"),IsAdmin())
@@ -444,7 +446,7 @@ async def help_cmd(m): await m.answer(HELP,reply_markup=kb([back()]))
 # action → (заголовок подтверждения, нужен ли статус владельца)
 DELETE_ACTIONS = {
     "booking_del": ("🗑 Удалить бронь #{arg}?\n\nБронь исчезнет из статистики. Клиент получит уведомление.", False),
-    "client_del":  ("🗑 Удалить клиента {arg}?\n\nВместе с ним удалятся ВСЕ его брони и отзывы.", False),
+    "client_del":  ("🗑 Удалить клиента {arg}?\n\nВместе с ним удалятся ВСЕ его данные: брони, отзывы и записи о согласии.", False),
     "tariff_del":  ("🗑 Удалить тариф?\n\nОн пропадёт из раздела «💰 Цены» у клиентов.", False),
     "faq_del":     ("🗑 Удалить вопрос из FAQ?\n\nКлиенты больше не увидят его в меню.", False),
     "review_del":  ("🗑 Удалить отзыв #{arg}?\n\nОн перестанет учитываться в средней оценке.", False),
@@ -502,7 +504,7 @@ async def do_confirm(c: CallbackQuery, state: FSMContext):
     elif action == "client_del":
         uid = int(arg); stats = await db.delete_client(uid)
         await log_action(c.from_user.id, f"deleted client {uid}")
-        await show(c, f"✅ Клиент {uid} удалён.\nБроней: {stats['bookings']}, отзывов: {stats['reviews']}.",
+        await show(c, f"✅ Клиент {uid} удалён вместе с персональными данными.\nБроней: {stats['bookings']}, отзывов: {stats['reviews']}, записей о согласии: {stats['consents']}.",
                    kb([[btn("👥 К клиентам", "admin:clients")], back()]))
 
     elif action == "tariff_del":

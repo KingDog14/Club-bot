@@ -5,6 +5,8 @@
   clients  — user_id, username, name, phone, visits, last_visit, created_at
   bookings — id, user_id, date, time, duration, pcs, status, created_at
   reviews  — id, user_id, rating, text, created_at
+  consents — журнал согласий на обработку персональных данных (152-ФЗ):
+             кто нажал «Начать», когда, версия текста и ссылка на политику
 
 При первом запуске база предзаполняется ДЕМО-данными (SEED_DEMO_DATA = True),
 чтобы владелец клуба сразу увидел /today, /week и /stats «живыми».
@@ -17,7 +19,7 @@ from datetime import timedelta as _timedelta
 
 import aiosqlite
 
-from app.config import DB_PATH, SEED_DEMO_DATA
+from app.config import CONSENT_VERSION, DB_PATH, PRIVACY_POLICY_URL, SEED_DEMO_DATA
 from app.utils import now
 
 logger = logging.getLogger(__name__)
@@ -103,10 +105,22 @@ CREATE TABLE IF NOT EXISTS audit_log (
     created_at TEXT NOT NULL
 );
 
+-- Согласия на обработку персональных данных (152-ФЗ).
+-- Каждое нажатие кнопки «Начать» на экране согласия — новая строка:
+-- оператору нужна доказательная база (кто, когда, какой версии согласился).
+CREATE TABLE IF NOT EXISTS consents (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id    INTEGER NOT NULL,
+    version    TEXT NOT NULL,           -- версия текста согласия (CONSENT_VERSION)
+    policy_url TEXT,                    -- ссылка на политику на момент согласия
+    created_at TEXT NOT NULL            -- ISO-время нажатия «Начать»
+);
+
 CREATE INDEX IF NOT EXISTS idx_bookings_date ON bookings(date);
 CREATE INDEX IF NOT EXISTS idx_bookings_status ON bookings(status);
 CREATE INDEX IF NOT EXISTS idx_bookings_user ON bookings(user_id);
 CREATE INDEX IF NOT EXISTS idx_reviews_user ON reviews(user_id);
+CREATE INDEX IF NOT EXISTS idx_consents_user ON consents(user_id);
 """
 
 
@@ -156,6 +170,14 @@ async def _seed_demo_data() -> None:
             demo_clients,
         )
 
+        # Демо-клиенты прошли экран согласия (152-ФЗ): нажали «Начать»
+        demo_ids = [row[0] for row in demo_clients]
+        await db.executemany(
+            "INSERT INTO consents (user_id, version, policy_url, created_at)"
+            " VALUES (?, ?, ?, ?)",
+            [(uid, CONSENT_VERSION, PRIVACY_POLICY_URL or None, created) for uid in demo_ids],
+        )
+
         # Демо-брони на сегодня
         demo_bookings = [
             (900000001, today, "18:00", 3, 2, STATUS_CONFIRMED, created),  # 18:00–21:00
@@ -180,6 +202,46 @@ async def _seed_demo_data() -> None:
 
         await db.commit()
     logger.info("База предзаполнена демо-данными (3 клиента, 3 брони, 2 отзыва)")
+
+
+# ──────────────────────────────
+# Согласия на обработку персональных данных (152-ФЗ)
+# ──────────────────────────────
+
+async def grant_consent(user_id: int, version: str, policy_url: str | None = None) -> None:
+    """
+    Зафиксировать согласие — нажатие кнопки «✅ Начать» на экране согласия.
+    Каждое нажатие пишется НОВОЙ строкой: это доказательная база оператора
+    (кто, когда, какой версии текста и с какой политикой согласился).
+    """
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "INSERT INTO consents (user_id, version, policy_url, created_at)"
+            " VALUES (?, ?, ?, ?)",
+            (user_id, version, policy_url or None, now().isoformat()),
+        )
+        await db.commit()
+
+
+async def has_consent(user_id: int) -> bool:
+    """Есть ли у пользователя согласие (хотя бы одно нажатие «Начать»)."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        cur = await db.execute(
+            "SELECT 1 FROM consents WHERE user_id = ? LIMIT 1", (user_id,)
+        )
+        return await cur.fetchone() is not None
+
+
+async def consent_info(user_id: int) -> dict | None:
+    """Последнее согласие пользователя (дата, версия, ссылка на политику)."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cur = await db.execute(
+            "SELECT * FROM consents WHERE user_id = ? ORDER BY id DESC LIMIT 1",
+            (user_id,),
+        )
+        row = await cur.fetchone()
+        return dict(row) if row else None
 
 
 # ──────────────────────────────
@@ -471,15 +533,20 @@ async def delete_booking(booking_id: int) -> None:
 
 
 async def delete_client(user_id: int) -> dict:
-    """Удалить клиента вместе с его бронями и отзывами. Возвращает счётчики."""
+    """
+    Удалить клиента вместе с его бронями, отзывами и записями о согласии —
+    так закрывается отзыв согласия / обращение субъекта об удалении данных.
+    """
     async with aiosqlite.connect(DB_PATH) as db:
         cur = await db.execute("DELETE FROM bookings WHERE user_id = ?", (user_id,))
         bookings = cur.rowcount
         cur = await db.execute("DELETE FROM reviews WHERE user_id = ?", (user_id,))
         reviews = cur.rowcount
+        cur = await db.execute("DELETE FROM consents WHERE user_id = ?", (user_id,))
+        consents = cur.rowcount
         await db.execute("DELETE FROM clients WHERE user_id = ?", (user_id,))
         await db.commit()
-    return {"bookings": bookings, "reviews": reviews}
+    return {"bookings": bookings, "reviews": reviews, "consents": consents}
 
 
 async def delete_tariff(tariff_id: int) -> None:
@@ -509,6 +576,7 @@ async def wipe(what: str) -> int:
             removed += (await db.execute("DELETE FROM reviews")).rowcount
         if what in ("clients", "all"):
             removed += (await db.execute("DELETE FROM clients")).rowcount
+            await db.execute("DELETE FROM consents")
             if what == "clients":
                 await db.execute("DELETE FROM bookings")
                 await db.execute("DELETE FROM reviews")
@@ -518,6 +586,7 @@ async def wipe(what: str) -> int:
                 f"DELETE FROM clients WHERE user_id IN ({marks})", demo_ids)).rowcount
             await db.execute(f"DELETE FROM bookings WHERE user_id IN ({marks})", demo_ids)
             await db.execute(f"DELETE FROM reviews WHERE user_id IN ({marks})", demo_ids)
+            await db.execute(f"DELETE FROM consents WHERE user_id IN ({marks})", demo_ids)
         await db.commit()
     return removed
 

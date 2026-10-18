@@ -60,6 +60,14 @@ async def on_startup(bot: Bot) -> None:
         log.info("AI: GigaChat, модель %s", config.AI_MODEL)
     else:
         log.info("AI: выключен (бот работает на кнопках)")
+    if config.PRIVACY_POLICY_URL:
+        log.info("Политика обработки ПДн: %s (согласие v%s)",
+                 config.PRIVACY_POLICY_URL, config.CONSENT_VERSION)
+    else:
+        log.warning(
+            "PRIVACY_POLICY_URL не задан — кнопка политики обработки персональных "
+            "данных не показывается. Политику предоставляет клуб (оператор ПДн): "
+            "впишите ссылку в PRIVACY_POLICY_URL (.env или app/config.py)")
     log.info("Сотрудников с доступом к панели: %s", len(roles.admin_ids()))
     if config.ADMIN_ID == 123456789:
         log.warning("ADMIN_ID не изменён — заявки уходят на вымышленный id. "
