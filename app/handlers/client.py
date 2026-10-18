@@ -35,6 +35,7 @@ from app.config import (
     FAQ_BASE,
     MAX_ACTIVE_BOOKINGS,
     PRIVACY_POLICY_URL,
+    DEMO_MODE,
     TIME_PERIODS,
     USE_AI,
 )
@@ -83,7 +84,7 @@ router.callback_query.outer_middleware(ClientAreaMiddleware())
 @router.message(CommandStart())
 async def cmd_start(message: Message, state: FSMContext) -> None:
     await state.clear()
-    # 152-ФЗ: /start — ещё НЕ согласие. Пока кнопка «Начать» не нажата,
+    # 152-ФЗ: /start — ещё НЕ согласие. Пока кнопка «Я согласен» не нажата,
     # данные клиента не сохраняются — показываем только экран согласия.
     if not await db.has_consent(message.from_user.id):
         await message.answer(texts.T(texts.consent_text()), reply_markup=consent_kb())
@@ -93,15 +94,18 @@ async def cmd_start(message: Message, state: FSMContext) -> None:
     await message.answer(texts.T(texts.WELCOME), reply_markup=main_menu_kb())
 
 
-@router.callback_query(F.data == "c:agree")
+@router.callback_query(F.data == "c:agree:v2")
 async def consent_agree(cb: CallbackQuery, state: FSMContext) -> None:
     """
-    Кнопка «✅ Начать» на экране согласия — это согласие на обработку
+    Кнопка «✅ Я согласен» на экране согласия — это согласие на обработку
     персональных данных (152-ФЗ). Фиксируем его в таблице consents
     (доказательная база оператора) и только после этого сохраняем
     имя/username — обработка данных начинается с этого момента.
     """
     await state.clear()
+    if not PRIVACY_POLICY_URL and not DEMO_MODE:
+        await cb.answer(texts.CONSENT_UNAVAILABLE, show_alert=True)
+        return
     await db.grant_consent(cb.from_user.id, CONSENT_VERSION, PRIVACY_POLICY_URL)
     await db.upsert_client(cb.from_user.id, cb.from_user.username, cb.from_user.full_name)
     logger.info("Согласие на обработку ПДн получено: %s (v%s)",
@@ -110,9 +114,18 @@ async def consent_agree(cb: CallbackQuery, state: FSMContext) -> None:
     await cb.answer(texts.CONSENT_ACCEPTED_TOAST)
 
 
+@router.callback_query(F.data == "c:revoke")
+async def consent_revoke(cb: CallbackQuery, state: FSMContext) -> None:
+    await db.revoke_consent(cb.from_user.id)
+    await state.clear()
+    await edit_or_send(cb, texts.T(texts.CONSENT_REVOKED))
+    await cb.message.answer(texts.T(texts.consent_text()), reply_markup=consent_kb())
+    await cb.answer("Согласие отозвано")
+
+
 @router.callback_query(F.data == "c:decline")
 async def consent_decline(cb: CallbackQuery, state: FSMContext) -> None:
-    """Отказ: данные не собираются, брони недоступны — до нажатия «Начать»."""
+    """Отказ: данные не собираются, брони недоступны — до нажатия «Я согласен»."""
     await state.clear()
     await edit_or_send(cb, texts.T(texts.CONSENT_DECLINED), reply_markup=consent_kb())
     await cb.answer()

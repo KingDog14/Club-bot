@@ -40,7 +40,7 @@ class ClientAreaMiddleware(BaseMiddleware):
 
     • сотрудник клуба (owner/admin) получает подсказку открыть панель;
     • заблокированный клиент получает вежливый отказ;
-    • клиент, не нажавший «Начать» на экране согласия (152-ФЗ), не проходит
+    • клиент, не нажавший «Я согласен» на экране согласия (152-ФЗ), не проходит
       дальше: данные не собираются, доступны только /start и кнопки согласия.
     """
 
@@ -58,11 +58,15 @@ class ClientAreaMiddleware(BaseMiddleware):
             await _reply(event, texts.CLIENT_ONLY)
             return None
 
+        # Отзыв доступен и заблокированному клиенту.
+        if _is_callback(event) and getattr(event, "data", "") == "c:revoke":
+            return await handler(event, data)
+
         if await db.is_blocked(user.id):
             await _reply(event, texts.BLOCKED.format(phone=CLUB_PHONE))
             return None
 
-        # 152-ФЗ: до нажатия «Начать» персональные данные не обрабатываются.
+        # 152-ФЗ: до нажатия «Я согласен» персональные данные не обрабатываются.
         if not await db.has_consent(user.id):
             return await _consent_gate(event, data, handler)
 
@@ -76,11 +80,11 @@ async def _consent_gate(
 ) -> Any:
     """
     Пользователь ещё не дал согласие. Пропускаем только сам экран согласия:
-    /start (его обработчик покажет согласие) и кнопки «c:» («Начать» /
+    /start (его обработчик покажет согласие) и кнопки «c:» («Я согласен» /
     «Отказаться»). На всё остальное — снова экран согласия или подсказка.
     """
     if _is_callback(event):
-        if (getattr(event, "data", "") or "").startswith("c:"):
+        if getattr(event, "data", "") in {"c:agree:v2", "c:decline", "c:revoke"}:
             return await handler(event, data)
         await event.answer(texts.CONSENT_REQUIRED, show_alert=True)
         return None

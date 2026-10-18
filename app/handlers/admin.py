@@ -224,7 +224,7 @@ async def client_card(c):
     if not x: await c.answer("Клиент не найден",show_alert=True); return
     rating=await ad.client_rating(uid); username=f"@{x['username']}" if x.get('username') else "без username"
     consent=await db.consent_info(uid)
-    consent_line=f"🛡 Согласие на ПДн: {consent['created_at'][:16].replace('T',' ')} (v{consent['version']})" if consent else "🛡 Согласие на ПДн: не зафиксировано"
+    consent_line=f"🛡 Согласие на ПДн: {consent['created_at'][:16].replace('T',' ')} (v{consent['version']})" if consent and not consent.get("revoked_at") else "🛡 Согласие на ПДн: отсутствует или отозвано"
     text=f"👤 <b>{x.get('name') or 'Без имени'}</b> ({username})\n📞 {x.get('phone') or 'не указан'}\n🎮 {x['visits']} визитов\n📅 Последний: {x.get('last_visit') or 'нет'}\n⭐ Средняя оценка: {rating or 'нет'}\n{consent_line}"
     block="✅ Разблокировать" if x.get('blocked') else "🚫 Заблокировать"
     await show(c,text,kb([[btn("📩 Написать",f"admin:client_message:{uid}"),btn("📜 История броней",f"admin:client_history:{uid}:0")],[btn(block,f"admin:client_block:{uid}"),btn("🗑 Удалить клиента",f"admin:ask:client_del:{uid}")],back("admin:clients")]))

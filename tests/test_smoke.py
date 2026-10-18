@@ -70,7 +70,7 @@ async def main() -> None:
     check("демо-клиенты помечены как давшие согласие", await db.has_consent(900000001))
     check("новый пользователь — без согласия", not await db.has_consent(6001))
     await db.grant_consent(6001, "1.0", "https://example.com/policy")
-    check("нажатие «Начать» фиксируется", await db.has_consent(6001))
+    check("нажатие «Я согласен» фиксируется", await db.has_consent(6001))
     info = await db.consent_info(6001)
     check("версия и ссылка на политику сохраняются",
           bool(info) and info["version"] == "1.0"
