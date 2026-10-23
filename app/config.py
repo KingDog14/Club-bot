@@ -102,6 +102,9 @@ SEED_DEMO_DATA = _bool("SEED_DEMO_DATA", True)  # предзаполнить б�
 CLUB_NAME = _str("CLUB_NAME", "КИБЕР-ДЕМО")
 CLUB_ADDRESS = _str("CLUB_ADDRESS", "ул. Примерная, 1, ТЦ «Тест», 2 этаж")
 CLUB_PHONE = _str("CLUB_PHONE", "+7 (000) 000-00-00")
+# Публичный Telegram-контакт клуба, например https://t.me/club_support.
+# Не собираем URL из ADMIN_ID: в демо это фиктивный Telegram ID.
+CLUB_CONTACT_URL = _str("CLUB_CONTACT_URL", "")
 CLUB_HOURS = _str("CLUB_HOURS", "круглосуточно")
 CLUB_MAPS_URL = _str("CLUB_MAPS_URL", "https://2gis.ru/demo")  # 2ГИС/Яндекс.Карты ("" = кнопки нет)
 CLUB_VK_URL = _str("CLUB_VK_URL", "")                          # группа ВК ("" = кнопки нет)
@@ -170,7 +173,7 @@ FAQ_BASE = {
 BOOKING_DAYS_AHEAD = 7                                  # сколько дней вперёд предлагать кнопками
 TIME_SLOTS = [f"{h:02d}:00" for h in range(10, 24)] + ["00:00"]  # слоты времени
 DURATIONS = (1, 2, 3, 4, 5)                             # варианты длительности, часов
-PCS_VARIANTS = (1, 2, 3, 4, 5)                          # варианты количества ПК
+PCS_VARIANTS = (1, 2, 3, 4, 5, 6, 7, 8)               # варианты количества ПК для групповой брони
 
 # «Размытые» периоды времени (для AI-парсинга) и их слоты —
 # если клиент написал «вечером», бот уточнит время этими кнопками

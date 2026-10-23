@@ -37,6 +37,7 @@ STATUS_LABELS = {
     STATUS_REJECTED: "❌ отклонено",
     STATUS_CANCELLED: "🚫 отменено",
     STATUS_NOSHOW: "👻 неявка",
+    "completed": "🏁 завершено",
 }
 
 # Активные (занимают место)
@@ -61,7 +62,66 @@ CREATE TABLE IF NOT EXISTS bookings (
     duration   INTEGER NOT NULL,       -- часов
     pcs        INTEGER NOT NULL,
     status     TEXT NOT NULL DEFAULT 'new',
-    created_at TEXT NOT NULL           -- ISO, нужен для /stats за месяц
+    created_at TEXT NOT NULL,          -- ISO, нужен для /stats за месяц
+    zone_id INTEGER,
+    pc_id INTEGER,
+    assigned_pc_id INTEGER,
+    pc_preference TEXT,
+    pc_conflict INTEGER NOT NULL DEFAULT 0,
+    duration_minutes INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS zones (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    code TEXT UNIQUE NOT NULL,
+    name TEXT NOT NULL,
+    description TEXT,
+    price_per_hour INTEGER NOT NULL DEFAULT 0,
+    color TEXT DEFAULT '⚪',
+    sort_order INTEGER DEFAULT 0,
+    is_active INTEGER DEFAULT 1,
+    requires_quantity INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS pcs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    number TEXT NOT NULL,
+    zone_id INTEGER NOT NULL,
+    label TEXT,
+    status TEXT DEFAULT 'active',
+    notes TEXT,
+    sort_order INTEGER DEFAULT 0,
+    is_active INTEGER DEFAULT 1,
+    created_at TEXT NOT NULL,
+    FOREIGN KEY (zone_id) REFERENCES zones(id)
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_pcs_active_number_zone ON pcs(number, zone_id) WHERE is_active = 1;
+
+CREATE TABLE IF NOT EXISTS booking_units (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    booking_id INTEGER NOT NULL,
+    unit_id INTEGER,
+    requested_unit_id INTEGER,
+    status TEXT DEFAULT 'pending',
+    sort_order INTEGER DEFAULT 0,
+    followup_id INTEGER,
+    FOREIGN KEY (booking_id) REFERENCES bookings(id),
+    FOREIGN KEY (unit_id) REFERENCES pcs(id),
+    FOREIGN KEY (requested_unit_id) REFERENCES pcs(id)
+);
+CREATE INDEX IF NOT EXISTS idx_booking_units_booking ON booking_units(booking_id);
+
+CREATE TABLE IF NOT EXISTS booking_followups (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    booking_id INTEGER NOT NULL,
+    user_id INTEGER NOT NULL,
+    kind TEXT NOT NULL,
+    value INTEGER,
+    payload TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'pending',
+    created_at TEXT NOT NULL,
+    FOREIGN KEY (booking_id) REFERENCES bookings(id)
 );
 
 CREATE TABLE IF NOT EXISTS reviews (
@@ -75,6 +135,12 @@ CREATE TABLE IF NOT EXISTS reviews (
 CREATE TABLE IF NOT EXISTS admin_settings (
     key   TEXT PRIMARY KEY,
     value TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS settings (
+    key TEXT PRIMARY KEY,
+    value TEXT,
+    updated_at TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS admin_tariffs (
@@ -133,6 +199,40 @@ async def init_db() -> None:
     async with aiosqlite.connect(DB_PATH) as db:
         await db.executescript(_SCHEMA)
         # Неблокирующая миграция: старые базы продолжают работать.
+        booking_columns = {row[1] for row in await (await db.execute("PRAGMA table_info(bookings)")).fetchall()}
+        for name, definition in (("zone_id", "INTEGER"), ("pc_id", "INTEGER"),
+                                 ("assigned_pc_id", "INTEGER"), ("pc_preference", "TEXT"),
+                                 ("pc_conflict", "INTEGER NOT NULL DEFAULT 0"),
+                                 ("duration_minutes", "INTEGER NOT NULL DEFAULT 0")):
+            if name not in booking_columns:
+                await db.execute(f"ALTER TABLE bookings ADD COLUMN {name} {definition}")
+        followup_columns = {row[1] for row in await (await db.execute("PRAGMA table_info(booking_followups)")).fetchall()}
+        if "payload" not in followup_columns:
+            await db.execute("ALTER TABLE booking_followups ADD COLUMN payload TEXT NOT NULL DEFAULT ''")
+        unit_columns = {row[1] for row in await (await db.execute("PRAGMA table_info(booking_units)")).fetchall()}
+        if "followup_id" not in unit_columns:
+            await db.execute("ALTER TABLE booking_units ADD COLUMN followup_id INTEGER")
+        zone_columns = {row[1] for row in await (await db.execute("PRAGMA table_info(zones)")).fetchall()}
+        if "requires_quantity" not in zone_columns:
+            await db.execute("ALTER TABLE zones ADD COLUMN requires_quantity INTEGER NOT NULL DEFAULT 1")
+        # Перенос legacy-назначений в связь booking_units без удаления исходных полей.
+        db.row_factory = aiosqlite.Row
+        bookings = await (await db.execute("SELECT * FROM bookings")).fetchall()
+        for booking in bookings:
+            exists = await (await db.execute("SELECT 1 FROM booking_units WHERE booking_id=? LIMIT 1",
+                                             (booking["id"],))).fetchone()
+            if exists:
+                continue
+            count = max(1, int(booking["pcs"] or 1))
+            assigned = booking["assigned_pc_id"] if "assigned_pc_id" in booking.keys() else None
+            requested = booking["pc_id"] if "pc_id" in booking.keys() else None
+            for index in range(count):
+                unit_id = assigned if index == 0 else None
+                requested_id = requested if index == 0 else None
+                status = ("assigned" if unit_id is not None and booking["status"] == STATUS_CONFIRMED
+                          else "cancelled" if booking["status"] == STATUS_CANCELLED else "pending")
+                await db.execute("INSERT INTO booking_units(booking_id,unit_id,requested_unit_id,status,sort_order) VALUES(?,?,?,?,?)",
+                                 (booking["id"], unit_id, requested_id, status, index))
         columns = {row[1] for row in await (await db.execute("PRAGMA table_info(clients) ")).fetchall()}
         if "blocked" not in columns:
             await db.execute("ALTER TABLE clients ADD COLUMN blocked INTEGER NOT NULL DEFAULT 0")
@@ -321,17 +421,27 @@ async def get_client_ids() -> list[int]:
 # ──────────────────────────────
 
 async def create_booking(
-    user_id: int, date: str, time: str, duration: int, pcs: int
+    user_id: int, date: str, time: str, duration: int, pcs: int,
+    zone_id: int | None = None, pc_id: int | None = None,
+    pc_preference: str | None = None, pc_conflict: bool = False,
+    requested_pc_ids: list[int] | None = None,
 ) -> int:
     """Создать заявку в статусе 'new', вернуть её id."""
     async with aiosqlite.connect(DB_PATH) as db:
         cur = await db.execute(
-            "INSERT INTO bookings (user_id, date, time, duration, pcs, status, created_at)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (user_id, date, time, duration, pcs, STATUS_NEW, now().isoformat()),
+            "INSERT INTO bookings (user_id, date, time, duration, pcs, status, created_at, zone_id, pc_id, pc_preference, pc_conflict)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (user_id, date, time, duration, pcs, STATUS_NEW, now().isoformat(), zone_id, pc_id, pc_preference, int(pc_conflict)),
+        )
+        booking_id = cur.lastrowid
+        requested_ids = list(requested_pc_ids or ([] if pc_preference == "any" else ([pc_id] if pc_id else [])))
+        await db.executemany(
+            "INSERT INTO booking_units(booking_id,requested_unit_id,status,sort_order) VALUES(?,?,?,?)",
+            [(booking_id, requested_ids[i] if i < len(requested_ids) else None, "pending", i)
+             for i in range(max(1, pcs))],
         )
         await db.commit()
-        return cur.lastrowid
+        return booking_id
 
 
 async def get_booking(booking_id: int) -> dict | None:
@@ -347,7 +457,69 @@ async def set_booking_status(booking_id: int, status: str) -> None:
         await db.execute(
             "UPDATE bookings SET status = ? WHERE id = ?", (status, booking_id)
         )
+        if status in {STATUS_REJECTED, STATUS_CANCELLED, STATUS_NOSHOW}:
+            await db.execute("UPDATE booking_units SET status='cancelled' WHERE booking_id=?", (booking_id,))
+            await db.execute("UPDATE booking_followups SET status='cancelled' WHERE booking_id=? AND status='pending'", (booking_id,))
         await db.commit()
+
+
+async def confirm_booking(booking_id: int, total_pcs: int, assigned_pc_id: int | None = None) -> bool:
+    """Atomically confirm a pending booking only if confirmed bookings leave capacity."""
+    async with aiosqlite.connect(DB_PATH) as conn:
+        await conn.execute("BEGIN IMMEDIATE")
+        conn.row_factory = aiosqlite.Row
+        row = await (await conn.execute(
+            "SELECT * FROM bookings WHERE id = ?", (booking_id,)
+        )).fetchone()
+        if not row or row["status"] != STATUS_NEW:
+            await conn.rollback()
+            return False
+
+        if assigned_pc_id is not None:
+            pc = await (await conn.execute(
+                "SELECT id FROM pcs WHERE id=? AND zone_id=? AND status='active' AND is_active=1",
+                (assigned_pc_id, row["zone_id"]),
+            )).fetchone()
+            if not pc:
+                await conn.rollback()
+                return False
+            conflicts = await (await conn.execute(
+                "SELECT time,duration FROM bookings WHERE date=? AND status=? "
+                "AND COALESCE(assigned_pc_id,pc_id)=? AND id!=?",
+                (row["date"], STATUS_CONFIRMED, assigned_pc_id, booking_id),
+            )).fetchall()
+            own_start = int(row["time"][:2]) * 60 + int(row["time"][3:5])
+            own_minutes = {(own_start + i) % 1440 for i in range(max(1, row["duration"]) * 60)}
+            for conflict in conflicts:
+                other_start = int(conflict["time"][:2]) * 60 + int(conflict["time"][3:5])
+                other_minutes = {(other_start + i) % 1440 for i in range(max(1, conflict["duration"]) * 60)}
+                if own_minutes & other_minutes:
+                    await conn.rollback()
+                    return False
+
+        start = int(row["time"][:2])
+        requested_hours = {(start + i) % 24 for i in range(max(1, row["duration"]))}
+        confirmed = await (await conn.execute(
+            "SELECT time, duration, pcs FROM bookings WHERE date = ? AND status = ? AND id != ?",
+            (row["date"], STATUS_CONFIRMED, booking_id),
+        )).fetchall()
+        occupancy: dict[int, int] = {}
+        for booking in confirmed:
+            other_start = int(booking["time"][:2])
+            other_hours = {(other_start + i) % 24 for i in range(max(1, booking["duration"]))}
+            for hour in requested_hours & other_hours:
+                occupancy[hour] = occupancy.get(hour, 0) + booking["pcs"]
+        max_busy = max(occupancy.values(), default=0)
+        if max_busy + row["pcs"] > total_pcs:
+            await conn.rollback()
+            return False
+
+        cursor = await conn.execute(
+            "UPDATE bookings SET status = ?, assigned_pc_id = ? WHERE id = ? AND status = ?",
+            (STATUS_CONFIRMED, assigned_pc_id, booking_id, STATUS_NEW),
+        )
+        await conn.commit()
+        return cursor.rowcount == 1
 
 
 async def get_bookings_for_date(date: str) -> list[dict]:
@@ -460,23 +632,21 @@ async def pcs_busy(date: str, time: str, duration: int,
     """
     start = int(time[:2])
     hours = {(start + i) % 24 for i in range(max(1, duration))}
-    placeholders = ",".join("?" for _ in STATUSES_ACTIVE)
-    sql = (f"SELECT id, time, duration, pcs FROM bookings "
-           f"WHERE date = ? AND status IN ({placeholders})")
-    args: list = [date, *STATUSES_ACTIVE]
+    sql = "SELECT id, time, duration, pcs FROM bookings WHERE date = ? AND status = ?"
+    args: list = [date, STATUS_CONFIRMED]
     if exclude_booking_id:
         sql += " AND id != ?"
         args.append(exclude_booking_id)
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
         rows = await (await db.execute(sql, args)).fetchall()
-    busy = 0
+    occupancy: dict[int, int] = {}
     for r in rows:
         other_start = int(r["time"][:2])
         other_hours = {(other_start + i) % 24 for i in range(max(1, r["duration"]))}
-        if hours & other_hours:
-            busy += r["pcs"]
-    return busy
+        for hour in hours & other_hours:
+            occupancy[hour] = occupancy.get(hour, 0) + r["pcs"]
+    return max(occupancy.values(), default=0)
 
 
 async def pcs_free(date: str, time: str, duration: int, total: int,

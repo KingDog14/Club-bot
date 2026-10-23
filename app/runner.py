@@ -18,6 +18,7 @@ from aiogram.types import ErrorEvent
 
 import app.config as config
 import app.database as db
+import app.config_loader as catalog
 import app.roles as roles
 from app.bot_commands import apply_all
 from app.handlers import admin, client
@@ -48,6 +49,7 @@ def setup_logging() -> None:
 async def on_startup(bot: Bot) -> None:
     """Инициализация: база, роли, демо-данные, планировщик, восстановление задач."""
     await db.init_db()
+    await catalog.reload_config()
     await roles.init()
     scheduler.start()
     await restore_jobs(bot)

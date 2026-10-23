@@ -29,14 +29,20 @@ def iso_days_ahead(days: int) -> str:
     return (today() + timedelta(days=days)).isoformat()
 
 
-def booking_start_end(date_str: str, time_str: str, duration: int) -> tuple[datetime, datetime]:
+def effective_duration_minutes(booking: dict) -> int:
+    """Новая точность в минутах; старые строки используют целочасовой duration."""
+    return int(booking.get("duration_minutes") or 0) or int(booking.get("duration", 1)) * 60
+
+
+def booking_start_end(date_str: str, time_str: str, duration: int,
+                      duration_minutes: int = 0) -> tuple[datetime, datetime]:
     """Начало и конец брони как aware-datetime в поясе клуба."""
     start = datetime.combine(
         date.fromisoformat(date_str),
         dtime.fromisoformat(time_str),
         tzinfo=TZ,
     )
-    return start, start + timedelta(hours=duration)
+    return start, start + timedelta(minutes=duration_minutes or duration * 60)
 
 
 def human_date(date_str: str) -> str:
@@ -60,9 +66,15 @@ def day_word(date_str: str) -> str:
     return d.strftime("%d.%m")
 
 
-def end_time_str(time_str: str, duration: int) -> str:
+def format_duration(booking: dict) -> str:
+    minutes=effective_duration_minutes(booking)
+    hours,remainder=divmod(minutes,60)
+    return f"{hours} ч" + (f" {remainder} мин" if remainder else "")
+
+
+def end_time_str(time_str: str, duration: int, duration_minutes: int = 0) -> str:
     """'22:00', 4 → '02:00' (время окончания сеанса)."""
-    _, end = booking_start_end(today().isoformat(), time_str, duration)
+    _, end = booking_start_end(today().isoformat(), time_str, duration, duration_minutes)
     return end.strftime("%H:%M")
 
 

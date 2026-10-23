@@ -10,6 +10,8 @@ class BookingForm(StatesGroup):
     date = State()       # дата
     time = State()       # время
     duration = State()   # длительность
+    zone = State()       # игровая зона из каталога
+    pc = State()         # конкретный ПК или любой свободный
     pcs = State()        # количество ПК
     name = State()       # имя клиента
     phone = State()      # телефон (можно пропустить)
@@ -33,6 +35,19 @@ class BroadcastForm(StatesGroup):
 
     content = State()    # ожидание текста или фото с подписью
     confirm = State()    # подтверждение отправки
+
+
+class FollowupForm(StatesGroup):
+    add_units = State()
+
+
+class CatalogForm(StatesGroup):
+    zone_add = State()       # code|name|price|emoji
+    zone_edit = State()      # name|description|price|emoji|sort_order
+    pc_add = State()         # number|zone_code|label
+    pc_edit = State()        # number|zone_code|label|notes
+    pc_import = State()      # CSV/text import
+    pc_import_confirm = State()
 
 
 class AdminEditForm(StatesGroup):

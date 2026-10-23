@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio, csv, io, logging
+import aiosqlite
 from datetime import date, datetime, timedelta
 
 from aiogram import F, Router
@@ -12,14 +13,19 @@ from aiogram.types import BufferedInputFile, CallbackQuery, InlineKeyboardButton
 
 import app.admin_data as ad
 import app.database as db
+import app.config_loader as catalog
+import app.booking_units as booking_units
+import app.followups as followups
+import app.zones_module as zones_data
+import app.pcs_module as pcs_data
 import app.roles as roles
 import app.texts as texts
 from app.bot_commands import apply_for_user
 from app.config import ADMIN_ID, AI_MODEL, CLUB_HOURS, CLUB_PCS_TOTAL, OWNER_ID, USE_AI
 from app.middlewares import AdminAreaMiddleware
 from app.scheduler import cancel_booking_jobs, schedule_booking_jobs
-from app.states import AdminEditForm, BroadcastForm
-from app.utils import MONTHS, WEEKDAYS, end_time_str, human_date, load_bar, now
+from app.states import AdminEditForm, BroadcastForm, CatalogForm
+from app.utils import MONTHS, WEEKDAYS, end_time_str, format_duration, human_date, load_bar, now
 
 logger = logging.getLogger(__name__)
 router = Router()
@@ -83,13 +89,169 @@ async def home(c:CallbackQuery,state:FSMContext): await screen_home(c,state)
 @router.message(Command("cancel"),IsAdmin())
 async def cancel(m:Message,state:FSMContext): await screen_home(m,state)
 
+async def _confirm_from_admin(c: CallbackQuery, booking_id: int, state: FSMContext | None = None) -> None:
+    """Для каталога пытается назначить все requested/any места атомарно."""
+    booking = await db.get_booking(booking_id)
+    if not booking or booking["status"] != db.STATUS_NEW:
+        await c.answer("Заявка уже обработана", show_alert=True)
+        return
+    if booking.get("zone_id"):
+        ok, assigned, total = await booking_units.confirm_all(booking_id)
+        if ok:
+            await _notify_group_result(c, booking_id, assigned, total)
+            return
+        text = (f"⚠️ Не удалось автоматически назначить все места в зоне.\n"
+                f"Назначено автоматически: {assigned} из {total}. Можно распределить вручную.")
+        await show(c, text, kb([[btn("🔀 Назначить вручную", f"adm:manual:{booking_id}")],
+                                [btn("❌ Отклонить", f"adm:no:{booking_id}")],
+                                back(f"admin:booking:{booking_id}")]))
+        return
+    await _finish_booking_confirmation(c, booking_id, None)
+
+
+async def _notify_group_result(c: CallbackQuery, booking_id: int, assigned: int, total: int) -> None:
+    booking = await db.get_booking(booking_id)
+    if not booking: return
+    units = await booking_units.units_for_booking(booking_id)
+    assigned_rows = [row for row in units if row["status"] == "assigned" and row["unit_id"]]
+    labels=[]
+    for row in assigned_rows:
+        pc=await catalog.get_pc_by_id(row["unit_id"])
+        if pc: labels.append(f"ПК {pc['number']}")
+    zone=next((z for z in await catalog.get_zones() if z["id"]==booking.get("zone_id")),None)
+    await db.add_visit(booking["user_id"])
+    schedule_booking_jobs(c.bot,{**booking,"status":db.STATUS_CONFIRMED})
+    result=("Бронь подтверждена." if assigned==total else "Бронь частично подтверждена.")
+    details=", ".join(labels) if labels else "места не назначены"
+    message=f"✅ {result}\n🎯 Зона {zone['name'] if zone else ''}\n🖥 Назначено: {details}"
+    if assigned < total: message += f"\n❌ Не удалось назначить: {total-assigned} мест. Администратор свяжется с вами."
+    try: await c.bot.send_message(booking["user_id"],message,reply_markup=followups.manage_keyboard(booking_id))
+    except TelegramAPIError: pass
+    await log_action(c.from_user.id,f"group booking #{booking_id} assigned {assigned}/{total}")
+    await screen_booking(c,booking_id)
+
+
+async def _render_manual_units(c: CallbackQuery, state: FSMContext, booking_id: int) -> None:
+    booking=await db.get_booking(booking_id)
+    if not booking or booking["status"]!=db.STATUS_NEW:
+        await c.answer("Заявка уже обработана",show_alert=True); return
+    rows=await booking_units.units_for_booking(booking_id)
+    selected=list((await state.get_data()).get("manual_units",[]))
+    available=await booking_units.available_units(booking["date"],booking["time"],booking["duration"],booking["zone_id"],booking_id)
+    choices=[]
+    for pc in available:
+        mark="☑" if pc["id"] in selected else "☐"
+        choices.append([btn(f"{mark} ПК {pc['number']}",f"adm:manual_toggle:{booking_id}:{pc['id']}")])
+    choices += [[btn(f"✅ Подтвердить выбранные ({len(selected)}/{len(rows)})",f"adm:manual_done:{booking_id}")],
+                back(f"admin:booking:{booking_id}")]
+    await show(c,f"🖥 Свободны в зоне на это время. Выберите до {len(rows)} мест; можно подтвердить меньше.",kb(choices))
+
+
+@router.callback_query(F.data.startswith("adm:manual:"),IsAdmin())
+async def admin_manual_units(c: CallbackQuery,state:FSMContext):
+    booking_id=int(c.data.rsplit(":",1)[1]); await state.update_data(manual_units=[])
+    await _render_manual_units(c,state,booking_id)
+
+@router.callback_query(F.data.startswith("adm:manual_toggle:"),IsAdmin())
+async def admin_manual_toggle(c: CallbackQuery,state:FSMContext):
+    _,_,_,booking_id,pc_id=c.data.split(":"); booking_id=int(booking_id); pc_id=int(pc_id)
+    data=await state.get_data(); selected=list(data.get("manual_units",[]))
+    booking=await db.get_booking(booking_id); units=await booking_units.units_for_booking(booking_id)
+    if pc_id in selected: selected.remove(pc_id)
+    elif len(selected)<len(units): selected.append(pc_id)
+    else: await c.answer(f"Выбрано максимальное количество мест: {len(units)}",show_alert=True); return
+    await state.update_data(manual_units=selected)
+    await _render_manual_units(c,state,booking_id)
+
+@router.callback_query(F.data.startswith("adm:manual_done:"),IsAdmin())
+async def admin_manual_done(c: CallbackQuery,state:FSMContext):
+    booking_id=int(c.data.rsplit(":",1)[1]); selected=list((await state.get_data()).get("manual_units",[]))
+    ok,assigned,total=await booking_units.assign_partial(booking_id,selected)
+    if not ok: await c.answer("Назначение невозможно: места уже заняты или заявка обработана.",show_alert=True); return
+    await state.clear(); await _notify_group_result(c,booking_id,len(assigned),total)
+
+
+async def _finish_booking_confirmation(c: CallbackQuery, booking_id: int, pc_id: int | None) -> None:
+    booking = await db.get_booking(booking_id)
+    if not booking or not await db.confirm_booking(booking_id, CLUB_PCS_TOTAL, pc_id):
+        await c.answer("Не удалось подтвердить: заявка уже обработана или выбранный ПК занят.", show_alert=True)
+        return
+    await db.add_visit(booking["user_id"])
+    schedule_booking_jobs(c.bot, {**booking, "status": db.STATUS_CONFIRMED})
+    zone = next((z for z in await catalog.get_zones() if z["id"] == booking.get("zone_id")), None)
+    pc = await catalog.get_pc_by_id(pc_id) if pc_id else None
+    assigned = f"\n🖥 Назначен ПК {pc['number']} ({zone['name'] if zone else 'зона'})" if pc else ""
+    try:
+        await c.bot.send_message(booking["user_id"],
+            f"✅ Бронь #{booking_id} подтверждена.{assigned}\n📅 {human_date(booking['date'])} в {booking['time']}",
+            reply_markup=followups.manage_keyboard(booking_id))
+    except TelegramAPIError:
+        pass
+    await log_action(c.from_user.id, f"booking #{booking_id} -> confirmed" + (f", pc={pc_id}" if pc_id else ""))
+    await screen_booking(c, booking_id)
+
+
+@router.callback_query(F.data.startswith("fuadm:yes:"),IsAdmin())
+async def followup_admin_approve(c:CallbackQuery):
+    request_id=int(c.data.rsplit(":",1)[1]); req=await followups.get_request(request_id)
+    if not req or req["status"]!="pending": await c.answer("Запрос уже обработан.",show_alert=True); return
+    booking=await db.get_booking(req["booking_id"])
+    if not booking: await c.answer("Бронь не найдена.",show_alert=True); return
+    if req["kind"]=="add_unit":
+        ok=await followups.approve_add_unit_request(request_id)
+        if not ok: await c.answer("Место уже занято или бронь завершена.",show_alert=True); return
+        await db.log_audit(c.from_user.id,f"approved add-unit followup #{request_id}")
+        added=[]
+        for unit in await booking_units.units_for_booking(booking["id"]):
+            if unit.get("followup_id")==request_id and unit.get("unit_id"):
+                pc=await catalog.get_pc_by_id(unit["unit_id"])
+                if pc: added.append(f"ПК {pc['number']}")
+        await c.bot.send_message(req["user_id"],f"✅ Дополнительные места подтверждены для брони #{booking['id']}: {', '.join(added)}.")
+    elif req["kind"]=="extend":
+        ok,updated=await followups.approve_extension(request_id)
+        if not ok: await c.answer("Продление невозможно: бронь завершена или возник конфликт.",show_alert=True); return
+        cancel_booking_jobs(booking["id"]); schedule_booking_jobs(c.bot,updated)
+        from app.utils import booking_start_end
+        _,end=booking_start_end(updated["date"],updated["time"],updated["duration"],updated.get("duration_minutes",0))
+        await c.bot.send_message(req["user_id"],f"✅ Продление подтверждено. Новое время окончания: {end.strftime('%H:%M')}. Оплату администратор примет на месте.")
+        await db.log_audit(c.from_user.id,f"approved extension #{request_id} (+{req['value']} min)")
+    elif req["kind"] in {"late","early"}:
+        if not await followups.set_request_status(request_id,"approved"):
+            await c.answer("Запрос уже обработан.",show_alert=True); return
+        label="опоздании" if req["kind"]=="late" else "раннем приезде"
+        await c.bot.send_message(req["user_id"],f"✅ Администратор принял уведомление о {label}. Время брони не изменено.")
+        await db.log_audit(c.from_user.id,f"acknowledged {req['kind']} report #{request_id}")
+    try: await c.message.edit_reply_markup(reply_markup=None)
+    except TelegramAPIError: pass
+    await c.answer("Выполнено")
+
+@router.callback_query(F.data.startswith("fuadm:no:"),IsAdmin())
+async def followup_admin_reject(c:CallbackQuery):
+    request_id=int(c.data.rsplit(":",1)[1]); req=await followups.get_request(request_id)
+    if not req or not await followups.set_request_status(request_id,"rejected"):
+        await c.answer("Запрос уже обработан.",show_alert=True); return
+    if req["kind"]=="add_unit":
+        async with aiosqlite.connect(db.DB_PATH) as conn:
+            await conn.execute("UPDATE booking_units SET status='cancelled' WHERE followup_id=?",(request_id,)); await conn.commit()
+    await c.bot.send_message(req["user_id"],"❌ Администратор не подтвердил запрос. Напишите ему для уточнения.")
+    await db.log_audit(c.from_user.id,f"rejected followup #{request_id}")
+    try: await c.message.edit_reply_markup(reply_markup=None)
+    except TelegramAPIError: pass
+    await c.answer("Отклонено")
+
+@router.callback_query(F.data.startswith("adm:assign:"), IsAdmin())
+async def admin_assign_pc(c: CallbackQuery):
+    _, _, booking_id, pc_id = c.data.split(":")
+    await _finish_booking_confirmation(c, int(booking_id), int(pc_id))
+
+
 # Сегодня и карточка
 async def screen_today(c:CallbackQuery,page=0):
     items=await db.get_bookings_for_date(now().date().isoformat()); page=max(0,min(page,max(0,(len(items)-1)//PAGE)))
     rows=[]
     for x in items[page*PAGE:(page+1)*PAGE]:
         cl=await db.get_client(x['user_id']) or {}; icon="🟢" if x['status']==db.STATUS_CONFIRMED else "🟡" if x['status']==db.STATUS_NEW else "🔴"
-        rows.append([btn(f"{icon} {x['time']}–{end_time_str(x['time'],x['duration'])} · {x['pcs']} ПК · {cl.get('name') or x['user_id']}",f"admin:booking:{x['id']}")])
+        rows.append([btn(f"{icon} {x['time']}–{end_time_str(x['time'],x['duration'],x.get('duration_minutes',0))} · {x['pcs']} ПК · {cl.get('name') or x['user_id']}",f"admin:booking:{x['id']}")])
     nav=[]
     if page: nav.append(btn("◀️",f"admin:today:{page-1}"))
     if (page+1)*PAGE<len(items): nav.append(btn("▶️",f"admin:today:{page+1}"))
@@ -106,8 +268,25 @@ async def screen_booking(c,bid):
     x=await db.get_booking(bid)
     if not x: await c.answer("Бронь не найдена",show_alert=True); return
     cl=await db.get_client(x['user_id']) or {}; username=f"@{cl['username']}" if cl.get('username') else "без username"
-    text=(f"🎮 <b>Бронь #{bid}</b>\n📅 {human_date(x['date'])}, {x['time']}–{end_time_str(x['time'],x['duration'])}\n"
-          f"🖥 {x['pcs']} ПК\n👤 {cl.get('name') or 'Без имени'} ({username})\n📞 {cl.get('phone') or 'не указан'}\n📊 Статус: {db.STATUS_LABELS.get(x['status'],x['status'])}")
+    zone = next((z for z in await catalog.get_zones() if z["id"] == x.get("zone_id")), None)
+    unit_rows=await booking_units.units_for_booking(int(bid))
+    requested=[]; assigned=[]
+    for unit in unit_rows:
+        pc_id=unit.get("requested_unit_id")
+        if pc_id:
+            pc=await catalog.get_pc_by_id(pc_id)
+            if pc: requested.append(pc["number"])
+        pc_id=unit.get("unit_id")
+        if pc_id and unit.get("status")=="assigned":
+            pc=await catalog.get_pc_by_id(pc_id)
+            if pc: assigned.append(pc["number"])
+    catalog_line = (f"🎯 Зона: {zone['name']}\n🖥 Клиент хочет: " +
+                    (", ".join(f"ПК {n}" for n in requested) if requested else "любой свободный") + "\n") if zone else ""
+    assigned_line = f"✅ Назначено: {', '.join(f'ПК {n}' for n in assigned)}\n" if assigned else ""
+    conflict_line = "⚠️ Конфликт по боту\n" if x.get("pc_conflict") else ""
+    text=(f"🎮 <b>Бронь #{bid}</b>\n📅 {human_date(x['date'])}, {x['time']}–{end_time_str(x['time'],x['duration'],x.get('duration_minutes',0))}\n"
+          f"⏱ {format_duration(x)} · 🖥 {x['pcs']} ПК\n{catalog_line}{assigned_line}{conflict_line}"
+          f"👤 {cl.get('name') or 'Без имени'} ({username})\n📞 {cl.get('phone') or 'не указан'}\n📊 Статус: {db.STATUS_LABELS.get(x['status'],x['status'])}")
     rows=[[btn("✅ Подтвердить",f"admin:booking_status:{bid}:confirmed"),btn("✏️ Изменить",f"admin:booking_edit:{bid}")],
           [btn("🚫 Неявка",f"admin:booking_status:{bid}:noshow"),btn("❌ Отменить",f"admin:booking_status:{bid}:cancelled")],
           [btn("💬 Написать клиенту",f"admin:booking_message:{bid}")],
@@ -116,14 +295,14 @@ async def screen_booking(c,bid):
 @router.callback_query(F.data.regexp(r"^admin:booking:\d+$"),IsAdmin())
 async def booking(c): await screen_booking(c,int(c.data.rsplit(':',1)[1]))
 @router.callback_query(F.data.startswith("admin:booking_status:"),IsAdmin())
-async def booking_status(c):
+async def booking_status(c,state:FSMContext):
     _,_,bid,status=c.data.split(':'); x=await db.get_booking(int(bid))
     if not x: await c.answer("Не найдено",show_alert=True); return
-    await db.set_booking_status(int(bid),status)
     if status==db.STATUS_CONFIRMED:
-        if x['status']!=db.STATUS_CONFIRMED: await db.add_visit(x['user_id'])
-        schedule_booking_jobs(c.bot,{**x,'status':status})
-    else: cancel_booking_jobs(int(bid))
+        await _confirm_from_admin(c, int(bid), state)
+        return
+    await db.set_booking_status(int(bid),status)
+    cancel_booking_jobs(int(bid))
     try: await c.bot.send_message(x['user_id'],f"Статус брони #{bid} изменён: {db.STATUS_LABELS[status]}")
     except TelegramAPIError: pass
     await log_action(c.from_user.id,f"booking #{bid} -> {status}"); await screen_booking(c,int(bid))
@@ -131,15 +310,11 @@ async def booking_status(c):
 # Совместимость с кнопками в карточках новых заявок, которые отправляет
 # неизменённая клиентская часть.
 @router.callback_query(F.data.startswith("adm:ok:"), IsAdmin())
-async def legacy_confirm(c: CallbackQuery):
+async def legacy_confirm(c: CallbackQuery,state:FSMContext):
     bid = int(c.data.rsplit(":", 1)[1]); x = await db.get_booking(bid)
     if not x or x["status"] != db.STATUS_NEW:
         await c.answer("Заявка уже обработана", show_alert=True); return
-    await db.set_booking_status(bid, db.STATUS_CONFIRMED); await db.add_visit(x["user_id"])
-    schedule_booking_jobs(c.bot, {**x, "status": db.STATUS_CONFIRMED})
-    try: await c.bot.send_message(x["user_id"], f"✅ Бронь #{bid} подтверждена")
-    except TelegramAPIError: pass
-    await log_action(c.from_user.id, f"booking #{bid} -> confirmed"); await screen_booking(c, bid)
+    await _confirm_from_admin(c, bid, state)
 
 @router.callback_query(F.data.startswith("adm:no:"), IsAdmin())
 async def legacy_reject(c: CallbackQuery):
@@ -319,11 +494,195 @@ async def export_db(target):
 @router.callback_query(F.data=="admin:export",IsAdmin())
 async def export(c): await export_db(c); await log_action(c.from_user.id,"database export"); await c.answer("Экспорт готов")
 
+# Каталог зон и компьютеров
+@router.callback_query(F.data=="admin:catalog:zones",IsAdmin())
+async def catalog_zones(c):
+    zones=await catalog.get_zones()
+    rows=[]
+    for z in zones:
+        pcs=await catalog.get_pcs_by_zone(z["id"])
+        rows.append([btn(f"{z['color']} {z['name']} · {z['price_per_hour']} ₽/ч · {len(pcs)} ПК",f"admin:catalog:zone:{z['id']}")])
+    rows += [[btn("➕ Добавить зону","admin:catalog:zone_add")],back("admin:settings")]
+    await show(c,"🎯 <b>Зоны и тарифы</b>",kb(rows))
+
+@router.callback_query(F.data.startswith("admin:catalog:zone:"),IsAdmin())
+async def catalog_zone(c):
+    zone_id=int(c.data.rsplit(":",1)[1]); zone=next((z for z in await catalog.get_zones() if z["id"]==zone_id),None)
+    if not zone: await c.answer("Зона не найдена",show_alert=True); return
+    pcs=await catalog.get_pcs_by_zone(zone_id)
+    rows=[[btn("✏️ Изменить","admin:catalog:zone_edit:"+str(zone_id))],
+          [btn("🗑 Деактивировать зону",f"admin:catalog:zone_del:{zone_id}")],back("admin:catalog:zones")]
+    await show(c,f"🎯 <b>{zone['name']}</b>\nКод: {zone['code']} · {zone['price_per_hour']} ₽/час\nПК: {len(pcs)}",kb(rows))
+
+@router.callback_query(F.data.startswith("admin:catalog:zone_del:"),IsAdmin())
+async def catalog_zone_del(c):
+    zone_id=int(c.data.rsplit(":",1)[1])
+    if not await zones_data.delete_zone(zone_id):
+        await c.answer("Сначала перенесите или деактивируйте ПК этой зоны.",show_alert=True); return
+    await log_action(c.from_user.id,f"zone {zone_id} deactivated")
+    await catalog_zones(c)
+
+@router.callback_query(F.data=="admin:catalog:zone_add",IsAdmin())
+async def catalog_zone_add(c,state):
+    await state.set_state(CatalogForm.zone_add)
+    await show(c,"Отправьте: <code>код|название|цена_за_час|эмодзи</code>\nНапример: <code>vip|VIP|250|🔵</code>",kb([back("admin:catalog:zones")]))
+
+@router.message(CatalogForm.zone_add,IsAdmin())
+async def catalog_zone_save(m,state):
+    parts=[x.strip() for x in (m.text or "").split("|")]
+    if len(parts)<3:
+        await m.answer("Формат: код|название|цена|эмодзи"); return
+    try: price=int(parts[2]); await zones_data.add_zone(parts[0],parts[1],price,color=parts[3] if len(parts)>3 else "⚪")
+    except Exception as exc:
+        await m.answer(f"Не удалось добавить зону: {exc}"); return
+    await state.clear(); await log_action(m.from_user.id,f"zone added {parts[0]}")
+    await m.answer("✅ Зона добавлена",reply_markup=kb([[btn("К зонам","admin:catalog:zones")]]))
+
+@router.callback_query(F.data.startswith("admin:catalog:zone_edit:"),IsAdmin())
+async def catalog_zone_edit(c,state):
+    zone_id=int(c.data.rsplit(":",1)[1]); zone=next((z for z in await catalog.get_zones() if z["id"]==zone_id),None)
+    if not zone: await c.answer("Зона не найдена",show_alert=True); return
+    await state.set_state(CatalogForm.zone_edit); await state.update_data(zone_id=zone_id)
+    await show(c,"Отправьте: <code>название|описание|цена|эмодзи|порядок</code>",kb([back(f"admin:catalog:zone:{zone_id}")]))
+
+@router.message(CatalogForm.zone_edit,IsAdmin())
+async def catalog_zone_edit_save(m,state):
+    parts=[x.strip() for x in (m.text or "").split("|")]; data=await state.get_data()
+    if len(parts)<3:
+        await m.answer("Формат: название|описание|цена|эмодзи|порядок"); return
+    try:
+        await zones_data.update_zone(data["zone_id"],name=parts[0],description=parts[1],price_per_hour=int(parts[2]),
+                                     color=parts[3] if len(parts)>3 else "⚪",sort_order=int(parts[4]) if len(parts)>4 else 0)
+    except Exception as exc: await m.answer(f"Изменение не сохранено: {exc}"); return
+    await state.clear(); await log_action(m.from_user.id,f"zone {data['zone_id']} edited")
+    await m.answer("✅ Зона обновлена",reply_markup=kb([[btn("К зонам","admin:catalog:zones")]]))
+
+@router.callback_query(F.data=="admin:catalog:pcs",IsAdmin())
+async def catalog_pcs(c):
+    zones=await catalog.get_zones(); rows=[]
+    for z in zones:
+        pcs=[p for p in (await catalog.load_config())["pcs"] if p["zone_id"]==z["id"]]
+        rows.append([btn(f"{z['color']} {z['name']} ({len(pcs)})",f"admin:catalog:pcs_zone:{z['id']}")])
+    rows += [[btn("➕ Добавить ПК","admin:catalog:pc_add"),btn("📥 Импорт ПК","admin:catalog:pc_import")],back("admin:settings")]
+    await show(c,"🖥 <b>Компьютеры клуба</b>",kb(rows))
+
+@router.callback_query(F.data.startswith("admin:catalog:pcs_zone:"),IsAdmin())
+async def catalog_pcs_zone(c, zone_id: int | None = None):
+    zone_id=zone_id or int(c.data.rsplit(":",1)[1]); cfg=await catalog.load_config()
+    zone=next((z for z in cfg["zones"] if z["id"]==zone_id),None)
+    if not zone: await c.answer("Зона не найдена",show_alert=True); return
+    rows=[]
+    for pc in cfg["pcs"]:
+        if pc["zone_id"]!=zone_id or not pc["is_active"]: continue
+        icon={"active":"🟢","maintenance":"🔧","disabled":"⚫"}.get(pc["status"],"⚫")
+        rows.append([btn(f"{icon} ПК {pc['number']} {pc.get('label') or ''}",f"admin:catalog:pc:{pc['id']}")])
+    rows.append(back("admin:catalog:pcs"))
+    await show(c,f"🖥 <b>{zone['name']}</b>",kb(rows))
+
+@router.callback_query(F.data.startswith("admin:catalog:pc:"),IsAdmin())
+async def catalog_pc(c, pc_id: int | None = None):
+    pc_id=pc_id or int(c.data.rsplit(":",1)[1]); pc=await catalog.get_pc_by_id(pc_id)
+    if not pc: await c.answer("ПК не найден",show_alert=True); return
+    status="maintenance" if pc["status"]=="active" else "active"
+    action="🔧 В ремонт" if status=="maintenance" else "✅ Вернуть в работу"
+    await show(c,f"ПК {pc['number']} · {pc['label'] or 'без описания'}\nСтатус: {pc['status']}",
+               kb([[btn("✏️ Изменить","admin:catalog:pc_edit:"+str(pc_id))],
+                   [btn(action,f"admin:catalog:pc_status:{pc_id}:{status}"),btn("🗑 Удалить",f"admin:catalog:pc_delete:{pc_id}")],
+                   back(f"admin:catalog:pcs_zone:{pc['zone_id']}")]))
+
+@router.callback_query(F.data.startswith("admin:catalog:pc_edit:"),IsAdmin())
+async def catalog_pc_edit(c,state):
+    pc_id=int(c.data.rsplit(":",1)[1]); await state.set_state(CatalogForm.pc_edit); await state.update_data(pc_id=pc_id)
+    await show(c,"Отправьте: <code>номер|код_зоны|описание|заметки</code>\nНапример: <code>34|vip|RTX 4090|240 Hz</code>",kb([back(f"admin:catalog:pc:{pc_id}")]))
+
+@router.message(CatalogForm.pc_edit,IsAdmin())
+async def catalog_pc_edit_save(m,state):
+    parts=[x.strip() for x in (m.text or "").split("|")]; data=await state.get_data()
+    zones=await catalog.get_zones(); zone=next((z for z in zones if len(parts)>1 and z["code"]==parts[1].lower()),None)
+    if len(parts)<2 or not zone: await m.answer("Укажите номер и существующий код зоны: номер|код|описание|заметки"); return
+    try: await pcs_data.update_pc(data["pc_id"],parts[0],zone["id"],parts[2] if len(parts)>2 else "",parts[3] if len(parts)>3 else "")
+    except Exception as exc: await m.answer(f"Изменение не сохранено: {exc}"); return
+    await state.clear(); await log_action(m.from_user.id,f"pc {data['pc_id']} edited")
+    await m.answer("✅ Данные ПК обновлены",reply_markup=kb([[btn("К компьютерам","admin:catalog:pcs")]]))
+
+@router.callback_query(F.data.startswith("admin:catalog:pc_status:"),IsAdmin())
+async def catalog_pc_status(c):
+    _,_,_,pc_id,status=c.data.split(":"); await pcs_data.update_pc_status(int(pc_id),status)
+    await log_action(c.from_user.id,f"pc {pc_id} -> {status}"); await catalog_pc(c,int(pc_id))
+
+@router.callback_query(F.data.startswith("admin:catalog:pc_delete:"),IsAdmin())
+async def catalog_pc_delete(c):
+    pc_id=int(c.data.rsplit(":",1)[1]); pc=await catalog.get_pc_by_id(pc_id)
+    await pcs_data.soft_delete_pc(pc_id); await log_action(c.from_user.id,f"pc {pc_id} soft-deleted")
+    if pc: await catalog_pcs_zone_screen(c,pc["zone_id"])
+    else: await catalog_pcs(c)
+
+async def catalog_pcs_zone_screen(c,zone_id):
+    await catalog_pcs_zone(c,zone_id)
+
+@router.callback_query(F.data=="admin:catalog:pc_add",IsAdmin())
+async def catalog_pc_add(c,state):
+    await state.set_state(CatalogForm.pc_add)
+    await show(c,"Отправьте: <code>номер|код_зоны|описание</code>\nНапример: <code>34|vip|RTX 4090</code>",kb([back("admin:catalog:pcs")]))
+
+@router.message(CatalogForm.pc_add,IsAdmin())
+async def catalog_pc_save(m,state):
+    parts=[x.strip() for x in (m.text or "").split("|")]
+    zones=await catalog.get_zones(); zone=next((z for z in zones if len(parts)>1 and z["code"]==parts[1].lower()),None)
+    if len(parts)<2 or not zone: await m.answer("Укажите номер и существующий код зоны: номер|код|описание"); return
+    try: await pcs_data.add_pc(parts[0],zone["id"],parts[2] if len(parts)>2 else "")
+    except Exception as exc: await m.answer(f"Не удалось добавить ПК: {exc}"); return
+    await state.clear(); await log_action(m.from_user.id,f"pc added {parts[0]}")
+    await m.answer("✅ ПК добавлен",reply_markup=kb([[btn("К компьютерам","admin:catalog:pcs")]]))
+
+@router.callback_query(F.data=="admin:catalog:pc_import",IsAdmin())
+async def catalog_pc_import(c,state):
+    await state.set_state(CatalogForm.pc_import)
+    await show(c,"Пришлите CSV или текст (номер,код_зоны,описание), по одному ПК на строке.",kb([back("admin:catalog:pcs")]))
+
+@router.message(CatalogForm.pc_import,IsAdmin(),F.text)
+async def catalog_pc_import_preview(m,state):
+    try: rows=pcs_data.parse_pc_import(m.text); zones={z['code']:z for z in await catalog.get_zones()}
+    except ValueError as exc: await m.answer(str(exc)); return
+    unknown=[row['zone'] for row in rows if row['zone'] not in zones]
+    if unknown: await m.answer("Неизвестные зоны: " + ", ".join(sorted(set(unknown)))); return
+    await state.update_data(catalog_import=rows); await state.set_state(CatalogForm.pc_import_confirm)
+    preview="\n".join(f"• {row['number']} ({zones[row['zone']]['name']}) {row['label']}" for row in rows[:50])
+    await m.answer(f"Найдено {len(rows)} ПК:\n{preview}",reply_markup=kb([[btn("✅ Импортировать","admin:catalog:import_yes"),btn("❌ Отмена","admin:catalog:import_no")]]))
+
+@router.message(CatalogForm.pc_import,IsAdmin(),F.document)
+async def catalog_pc_import_document(m,state):
+    buffer=io.BytesIO()
+    try:
+        await m.bot.download(m.document.file_id,destination=buffer)
+        source=buffer.getvalue().decode("utf-8-sig")
+        rows=pcs_data.parse_pc_import(source)
+        zones={z['code']:z for z in await catalog.get_zones()}
+        unknown=[row['zone'] for row in rows if row['zone'] not in zones]
+        if unknown: await m.answer("Неизвестные зоны: " + ", ".join(sorted(set(unknown)))); return
+    except Exception as exc:
+        await m.answer(f"Не удалось прочитать CSV: {exc}"); return
+    await state.update_data(catalog_import=rows); await state.set_state(CatalogForm.pc_import_confirm)
+    preview="\n".join(f"• {row['number']} ({zones[row['zone']]['name']}) {row['label']}" for row in rows[:50])
+    await m.answer(f"Найдено {len(rows)} ПК:\n{preview}",reply_markup=kb([[btn("✅ Импортировать","admin:catalog:import_yes"),btn("❌ Отмена","admin:catalog:import_no")]]))
+
+@router.callback_query(F.data=="admin:catalog:import_yes",IsAdmin())
+async def catalog_pc_import_apply(c,state):
+    rows=(await state.get_data()).get("catalog_import",[])
+    try: count=await pcs_data.import_pcs(rows)
+    except Exception as exc: await state.clear(); await c.answer(f"Импорт отменён: {exc}",show_alert=True); return
+    await state.clear(); await log_action(c.from_user.id,f"imported {count} PCs")
+    await show(c,f"✅ Импортировано ПК: {count}",kb([back("admin:catalog:pcs")]))
+
+@router.callback_query(F.data=="admin:catalog:import_no",IsAdmin())
+async def catalog_pc_import_cancel(c,state): await state.clear(); await catalog_pcs(c)
+
 # Настройки
 @router.callback_query(F.data=="admin:settings",IsAdmin())
 async def settings(c):
     owner = roles.is_owner(c.from_user.id)
-    rows=[[btn("💰 Тарифы","admin:tariffs"),btn("❓ FAQ","admin:faqs")],
+    rows=[[btn("🖥 Компьютеры","admin:catalog:pcs"),btn("🎯 Зоны","admin:catalog:zones")],
+          [btn("💰 Тарифы","admin:tariffs"),btn("❓ FAQ","admin:faqs")],
           [btn("🕐 Режим работы","admin:hours"),btn("🤖 AI","admin:ai")],
           [btn("👮 Админы","admin:admins"),btn("📤 Экспорт базы","admin:export")],
           [btn("🔒 Пауза","admin:pause"),btn("📜 Журнал","admin:audit")]]
@@ -409,7 +768,7 @@ async def hours_edit(c,state):
 async def hours_save(m,state):
     value=(m.text or "").strip()
     if not 2<=len(value)<=100: await m.answer("Введите текст от 2 до 100 символов."); return
-    await ad.set_setting("club_hours",value); await state.clear(); await log_action(m.from_user.id,f"hours -> {value}")
+    await ad.set_setting("club_hours",value); await catalog.reload_config(); await state.clear(); await log_action(m.from_user.id,f"hours -> {value}")
     await m.answer("✅ Сохранено",reply_markup=kb([[btn("К настройкам","admin:settings")]]))
 
 HELP = (

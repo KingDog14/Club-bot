@@ -1,0 +1,7 @@
+{
+  "club": {"name": "Название клуба", "address": "Адрес", "phone": "+7", "hours": "10:00–23:00", "maps_url": "", "vk_url": ""},
+  "welcome_text": "Добро пожаловать!",
+  "zones": [{"code": "standard", "name": "Standard", "description": "", "price": 150, "color": "⚪", "sort_order": 1}],
+  "pcs": [{"number": "1", "zone": "standard", "label": "", "notes": ""}],
+  "faq": {"С какого возраста можно?": "Укажите правило клуба"}
+}

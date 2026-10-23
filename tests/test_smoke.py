@@ -33,6 +33,7 @@ def check(name: str, condition: bool) -> None:
 
 async def main() -> None:
     await db.init_db()
+    await ad.tariffs()  # инициализировать стандартные демо-тарифы до добавления зоны
     await roles.init()
 
     # ── роли ───────────────────────────────────────────────
@@ -60,11 +61,79 @@ async def main() -> None:
     # Отдельный день, чтобы демо-брони не влияли на расчёт
     from datetime import timedelta
     today = (now().date() + timedelta(days=5)).isoformat()
-    await db.create_booking(5001, today, "19:00", 2, CLUB_PCS_TOTAL)
+    pending_id = await db.create_booking(5001, today, "19:00", 2, CLUB_PCS_TOTAL)
+    check("заявка не резервирует ПК до подтверждения", await db.pcs_free(today, "20:00", 1, CLUB_PCS_TOTAL) == CLUB_PCS_TOTAL)
+    check("админ может атомарно подтвердить доступную заявку",
+          await db.confirm_booking(pending_id, CLUB_PCS_TOTAL))
     free = await db.pcs_free(today, "20:00", 1, CLUB_PCS_TOTAL)
     check("пересекающиеся брони занимают ПК", free == 0)
     free_later = await db.pcs_free(today, "23:00", 1, CLUB_PCS_TOTAL)
     check("непересекающееся время свободно", free_later == CLUB_PCS_TOTAL)
+
+    # ── модульный каталог ПК/зон ────────────────────────────
+    from app.zones_module import add_zone
+    from app.pcs_module import add_pc, parse_pc_import
+    from app.config_loader import reload_config, get_available_pcs_for_time
+    catalog_day = (now().date() + timedelta(days=6)).isoformat()
+    zone_id = await add_zone("test-vip", "Тест VIP", 250, color="🔵")
+    pc34 = await add_pc("34", zone_id, "RTX 4090")
+    pc35 = await add_pc("35", zone_id, "RTX 4090")
+    pc36 = await add_pc("36", zone_id, "RTX 4090")
+    await reload_config()
+    available = await get_available_pcs_for_time(catalog_day, "18:00", 2, zone_id)
+    check("каталог отдаёт активные ПК зоны", {pc["id"] for pc in available} == {pc34, pc35, pc36})
+    catalog_booking = await db.create_booking(5010, catalog_day, "18:00", 2, 1,
+                                              zone_id=zone_id, pc_id=pc34, pc_preference="specific")
+    check("админ может назначить ПК при подтверждении",
+          await db.confirm_booking(catalog_booking, CLUB_PCS_TOTAL, pc34))
+    conflict_booking = await db.create_booking(5011, catalog_day, "19:00", 1, 1,
+                                               zone_id=zone_id, pc_id=pc34, pc_preference="specific")
+    check("тот же ПК нельзя подтвердить на пересекающееся время",
+          not await db.confirm_booking(conflict_booking, CLUB_PCS_TOTAL, pc34))
+    import aiosqlite
+    async with aiosqlite.connect(db.DB_PATH) as conn:
+        await conn.execute("DELETE FROM booking_units WHERE booking_id=?", (catalog_booking,))
+        await conn.commit()
+    await db.init_db()
+    from app.booking_units import units_for_booking
+    migrated_units = await units_for_booking(catalog_booking)
+    check("legacy assigned_pc_id переносится в booking_units без потери",
+          migrated_units[0]["unit_id"] == pc34 and migrated_units[0]["status"] == "assigned")
+    check("импорт распознаёт строки CSV", len(parse_pc_import("36,test-vip,RTX 4090\n37,test-vip,RTX 4090")) == 2)
+
+    from app.booking_units import confirm_all, units_for_booking
+    group_booking = await db.create_booking(5012, (now().date() + timedelta(days=8)).isoformat(),
+                                            "18:00", 2, 3, zone_id=zone_id, pc_preference="any")
+    group_rows = await units_for_booking(group_booking)
+    check("групповая бронь создаёт одну заявку и три места", len(group_rows) == 3)
+    ok, assigned, total = await confirm_all(group_booking)
+    group_rows = await units_for_booking(group_booking)
+    check("автоподтверждение назначает все три ПК", ok and assigned == total == 3
+          and all(row["status"] == "assigned" for row in group_rows))
+
+    pc37 = await add_pc("37", zone_id, "RTX 4090")
+    import json
+    from app.booking_units import add_pending_units
+    from app.followups import (create_request, approve_add_unit_request,
+                               approve_extension, set_request_status, cancel_booking)
+    addon = await create_request(group_booking, 5012, "add_unit", 1, json.dumps([pc37]))
+    await add_pending_units(group_booking, [pc37], addon)
+    check("follow-up добавляет место к существующей группе после одобрения",
+          await approve_add_unit_request(addon))
+    extension = await create_request(group_booking, 5012, "extend", 30)
+    extended, updated = await approve_extension(extension)
+    check("продление на 30 минут точно сохраняет дробную длительность",
+          extended and updated["duration_minutes"] == 150)
+    late = await create_request(group_booking, 5012, "late", 20)
+    check("уведомление об опоздании закрывается без изменения брони",
+          await set_request_status(late, "approved") and (await db.get_booking(group_booking))["duration_minutes"] == 150)
+    check("клиент может отменить активную бронь вместе со всеми местами",
+          await cancel_booking(group_booking, 5012) and (await db.get_booking(group_booking))["status"] == db.STATUS_CANCELLED)
+    from app.intent_parser import parse_followup
+    check("follow-up парсер понимает опоздание, продление и добавление ПК",
+          parse_followup("Опоздаю на 20 минут")["params"]["minutes"] == 20
+          and parse_followup("Продли на 1 час")["params"]["minutes"] == 60
+          and parse_followup("добавь ещё ПК 35")["params"]["unit_number"] == "35")
 
     # ── персональные данные: согласие (152-ФЗ) ─────────────
     check("демо-клиенты помечены как давшие согласие", await db.has_consent(900000001))
