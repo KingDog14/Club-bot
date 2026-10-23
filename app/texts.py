@@ -5,6 +5,7 @@
 """
 from app.config import (
     CLUB_ADDRESS,
+    CLUB_CONTACT_URL,
     CLUB_HOURS,
     CLUB_NAME,
     CLUB_PHONE,
@@ -19,6 +20,17 @@ from app.config import (
 # ──────────────────────────────
 
 DEMO_HEADER = "🧪 ДЕМО-РЕЖИМ. Это пример бота для вашего клуба."
+_BASE_VALUES = {"name": CLUB_NAME, "address": CLUB_ADDRESS, "phone": CLUB_PHONE, "hours": CLUB_HOURS}
+
+
+def apply_runtime_settings(settings: dict[str, str]) -> None:
+    """Применить значения клуба из admin_settings после загрузки БД."""
+    global CLUB_NAME, CLUB_ADDRESS, CLUB_PHONE, CLUB_HOURS, WELCOME
+    CLUB_NAME = settings.get("club_name", CLUB_NAME)
+    CLUB_ADDRESS = settings.get("club_address", CLUB_ADDRESS)
+    CLUB_PHONE = settings.get("club_phone", CLUB_PHONE)
+    CLUB_HOURS = settings.get("club_hours", CLUB_HOURS)
+    WELCOME = settings.get("welcome_text") or WELCOME
 
 
 def T(text: str) -> str:
@@ -27,6 +39,11 @@ def T(text: str) -> str:
     Админские сообщения (карточки, /today, /stats) помечать не нужно —
     вызывайте T() только для ответов клиентам.
     """
+    for key, value in (("name", CLUB_NAME), ("address", CLUB_ADDRESS),
+                       ("phone", CLUB_PHONE), ("hours", CLUB_HOURS)):
+        original = _BASE_VALUES[key]
+        if original and original != value:
+            text = text.replace(original, value)
     return f"{DEMO_HEADER}\n\n{text}" if DEMO_MODE else text
 
 
@@ -137,8 +154,8 @@ ADDRESS = (
 
 CONTACT = (
     f"📞 <b>Связь с клубом</b>\n\n"
-    f"Телефон: <code>{CLUB_PHONE}</code>\n\n"
-    "Или напишите администратору — кнопка ниже откроет чат."
+    f"Телефон: <code>{CLUB_PHONE}</code>"
+    + ("\n\nНажмите кнопку ниже, чтобы написать администратору." if CLUB_CONTACT_URL else "")
 )
 
 BTN_ADMIN_CHAT = "💬 Написать администратору"

@@ -47,7 +47,7 @@ REVISIT_LATE_HOURS = 1
 def schedule_booking_jobs(bot: Bot, booking: dict) -> None:
     """Поставить напоминание и запрос отзыва для подтверждённой брони."""
     current = now()
-    start, end = booking_start_end(booking["date"], booking["time"], booking["duration"])
+    start, end = booking_start_end(booking["date"], booking["time"], booking["duration"], booking.get("duration_minutes", 0))
 
     remind_at = start - timedelta(hours=REMIND_BEFORE_HOURS)
     review_at = end + timedelta(hours=REVIEW_AFTER_HOURS)
@@ -96,7 +96,7 @@ async def restore_jobs(bot: Bot) -> None:
     """
     restored = 0
     for booking in await db.get_future_confirmed(now().date().isoformat()):
-        _, end = booking_start_end(booking["date"], booking["time"], booking["duration"])
+        _, end = booking_start_end(booking["date"], booking["time"], booking["duration"], booking.get("duration_minutes", 0))
         # Визит давно закончился — и напоминать, и просить отзыв поздно
         if end + timedelta(hours=REVISIT_LATE_HOURS) <= now():
             continue

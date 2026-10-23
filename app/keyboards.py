@@ -14,8 +14,8 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 import app.texts as texts
 from app.config import (
-    ADMIN_ID,
     BOOKING_DAYS_AHEAD,
+    CLUB_CONTACT_URL,
     CLUB_MAPS_URL,
     CLUB_SITE_URL,
     CLUB_VK_URL,
@@ -29,6 +29,15 @@ from app.config import (
 )
 from app.utils import WEEKDAYS, today as club_today
 from datetime import timedelta
+
+
+def apply_runtime_settings(settings: dict[str, str]) -> None:
+    """Обновить ссылки клуба из конфигурации БД без перезапуска процесса."""
+    global CLUB_MAPS_URL, CLUB_VK_URL, CLUB_SITE_URL, CLUB_CONTACT_URL
+    CLUB_MAPS_URL = settings.get("club_maps_url", CLUB_MAPS_URL)
+    CLUB_VK_URL = settings.get("club_vk_url", CLUB_VK_URL)
+    CLUB_SITE_URL = settings.get("club_site_url", CLUB_SITE_URL)
+    CLUB_CONTACT_URL = settings.get("club_contact_url", CLUB_CONTACT_URL)
 
 
 # ──────────────────────────────
@@ -79,8 +88,11 @@ def my_bookings_kb(bookings: list[dict]) -> InlineKeyboardMarkup:
     """Список активных броней клиента с возможностью отменить свою бронь."""
     kb = InlineKeyboardBuilder()
     for b in bookings:
-        kb.button(text=f"❌ Отменить #{b['id']} · {b['date'][8:10]}.{b['date'][5:7]} {b['time']}",
-                  callback_data=f"my:cancel:{b['id']}")
+        if b.get("status") == "confirmed":
+            kb.button(text=f"🛠 Управлять бронью #{b['id']}", callback_data=f"fu:manage:{b['id']}")
+        if b.get("status") in {"new", "confirmed"}:
+            kb.button(text=f"❌ Отменить #{b['id']} · {b['date'][8:10]}.{b['date'][5:7]} {b['time']}",
+                      callback_data=f"my:cancel:{b['id']}")
     kb.button(text=texts.MENU_BOOK, callback_data="m:book")
     kb.button(text=texts.MENU_BACK, callback_data="m:home")
     kb.adjust(1)
@@ -191,7 +203,7 @@ def ai_fail_kb() -> InlineKeyboardMarkup:
 
 def admin_booking_kb(booking_id: int, user_id: int) -> InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
-    kb.button(text="✅ Подтвердить", callback_data=f"adm:ok:{booking_id}")
+    kb.button(text="✅ Подтвердить все", callback_data=f"adm:ok:{booking_id}")
     kb.button(text="❌ Отклонить", callback_data=f"adm:no:{booking_id}")
     # Открывает личный чат с клиентом прямо из карточки
     kb.button(text="💬 Написать", url=f"tg://user?id={user_id}")
@@ -289,9 +301,11 @@ def address_kb() -> InlineKeyboardMarkup:
     return kb.as_markup()
 
 
-def contact_kb(admin_id: int = ADMIN_ID) -> InlineKeyboardMarkup:
+def contact_kb() -> InlineKeyboardMarkup:
+    """Контакты клуба. Telegram-ссылка показывается только при явной настройке."""
     kb = InlineKeyboardBuilder()
-    kb.button(text=texts.BTN_ADMIN_CHAT, url=f"tg://user?id={admin_id}")
+    if CLUB_CONTACT_URL:
+        kb.button(text=texts.BTN_ADMIN_CHAT, url=CLUB_CONTACT_URL)
     _social_buttons(kb)
     kb.button(text=texts.MENU_BACK, callback_data="m:home")
     kb.adjust(1)

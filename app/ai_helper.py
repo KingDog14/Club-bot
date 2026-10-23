@@ -133,7 +133,7 @@ def _ask(system: str, user: str) -> str | None:
 
 _PARSE_SYSTEM = """Ты — парсер заявок на бронирование компьютерного клуба.
 Из сообщения клиента извлеки поля и верни СТРОГО один JSON-объект без пояснений и без markdown:
-{{"date": ..., "time": ..., "duration": ..., "pcs": ...}}
+{{"date": ..., "time": ..., "duration": ..., "pcs": ..., "pc_number": ...}}
 
 Правила:
 - date — "сегодня", "завтра", "послезавтра" или дата "ГГГГ-ММ-ДД"
@@ -142,6 +142,8 @@ _PARSE_SYSTEM = """Ты — парсер заявок на бронирован�
   "утро", "день", "вечер", "ночь". «Вечером» → "вечер", «утром» → "утро" и т.д.
 - duration — длительность в часах, целое число.
 - pcs — количество ПК/игроков, целое число («нас двое» → 2).
+- pc_number — номер конкретного ПК, только если клиент явно просит конкретный номер
+  («забронируй ПК 34» → "34"). Не считай номер ПК количеством ПК.
 - Значения не найденных полей — null.
 - Если сообщение не про бронирование (приветствие, вопрос о ценах и т.п.) — верни слово null.
 """
@@ -196,6 +198,10 @@ def parse_booking(text: str) -> dict | None:
     time_val = str(data.get("time") or "").strip().lower()
     if time_val:
         result["time"] = time_val
+
+    pc_number = str(data.get("pc_number") or "").strip()
+    if pc_number and len(pc_number) <= 12 and re.fullmatch(r"[\w-]+", pc_number):
+        result["pc_number"] = pc_number
 
     for key, limit in (("duration", 12), ("pcs", 10)):
         value = data.get(key)

@@ -1,0 +1,25 @@
+{
+  "club": {
+    "name": "КИБЕР-ДЕМО",
+    "address": "ул. Примерная, 1, ТЦ «Тест», 2 этаж",
+    "phone": "+7 (000) 000-00-00",
+    "hours": "круглосуточно",
+    "maps_url": "https://2gis.ru/demo",
+    "vk_url": ""
+  },
+  "welcome_text": "Добро пожаловать в клуб! Выберите действие в меню.",
+  "zones": [
+    {"code": "vip", "name": "VIP", "description": "Демо-зона повышенного класса", "price": 200, "color": "🔵", "sort_order": 1},
+    {"code": "standard", "name": "Standard", "description": "Основная игровая зона", "price": 100, "color": "⚪", "sort_order": 2}
+  ],
+  "pcs": [
+    {"number": "34", "zone": "vip", "label": "ПК 34 (демо)"},
+    {"number": "35", "zone": "vip", "label": "ПК 35 (демо)"},
+    {"number": "47", "zone": "standard", "label": "ПК 47 (демо)"},
+    {"number": "48", "zone": "standard", "label": "ПК 48 (демо)"}
+  ],
+  "faq": {
+    "С какого возраста можно?": "С 12 лет — до 18 лет нужно согласие родителей.",
+    "Есть ли PS5?": "Да, в демо-конфигурации есть демо-зона PS5."
+  }
+}
